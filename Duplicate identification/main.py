@@ -1,96 +1,116 @@
-query = reference = ''
+from genome_utils import inv
+
+class State:
+    def __init__(self):
+        self.next = dict()
+        self.link = -1
+        self.len = 0
+
+class SuffixAutomaton:
+    def __init__(self):
+        self.size = 1
+        self.last = 0
+        self.states = [State()]
+    
+    def sa_extend(self, c):
+        p = self.last
+        curr = self.size
+        self.size += 1
+        self.states.append(State())
+        self.states[curr].len = self.states[p].len + 1
+        while p >= 0 and c not in self.states[p].next:
+            self.states[p].next[c] = curr
+            p = self.states[p].link
+        if p == -1:
+            self.states[curr].link = 0
+        else:
+            q = self.states[p].next[c]
+            if self.states[p].len + 1 == self.states[q].len:
+                self.states[curr].link = q
+            else:
+                clone = self.size
+                self.size += 1
+                self.states.append(State())
+                self.states[clone].len = self.states[p].len + 1
+                self.states[clone].next = self.states[q].next.copy()
+                self.states[clone].link = self.states[q].link
+                while p >= 0 and self.states[p].next[c] == q:
+                    self.states[p].next[c] = clone
+                    p = self.states[p].link
+                self.states[q].link = clone
+                self.states[curr].link = clone
+        self.last = curr
+
+def build_suffix_automaton(s):
+    sam = SuffixAutomaton()
+    for c in s:
+        sam.sa_extend(c)
+    return sam
+
+def find_max_length(sam, query, start):
+    current_state = 0
+    max_len = 0
+    for j in range(start, len(query)):
+        c = query[j]
+        if c in sam.states[current_state].next:
+            current_state = sam.states[current_state].next[c]
+            max_len += 1
+        else:
+            break
+    return max_len
+
+# Read input
+with open('Duplicate identification/input/reference.txt') as f:
+    reference = f.read().strip('\n')
 
 with open('Duplicate identification/input/query.txt') as f:
     query = f.read().strip('\n')
-    assert all(c in 'ATCG' for c in query)
 
-with open('Duplicate identification/input/reference.txt') as f:
-    reference = f.read().strip('\n')
-    assert all(c in 'ATCG' for c in reference)
+# Preprocess inv_reference
+inv_reference = inv(reference)
 
-from genome_utils import inv
+# Build suffix automata for reference and inv_reference
+sam_ref = build_suffix_automaton(reference)
+sam_inv_ref = build_suffix_automaton(inv_reference)
 
-def find_duplicates(reference, query):
-    results = []
-    i = 0
-    while i < len(query):
-        match_size = 0
-        is_inverse = False
-        ref_index = -1
-        
-        # Find the longest matching segment
-        for size in range(1, len(query) - i + 1):
-            s = query[i:i+size]
-            if s in reference:
-                match_size = size
-                is_inverse = False
-                ref_index = reference.index(s)
-            elif inv(s) in reference:
-                match_size = size
-                is_inverse = True
-                ref_index = reference.index(inv(s))
-            else:
-                break
-                
-        if match_size > 0:
-            segment = query[i:i+match_size]
-            count = 1
-            j = i + match_size
-            # Validate consecutive matches
-            while j + match_size <= len(query):
-                next_seg = query[j:j+match_size]
-                current = segment if not is_inverse else inv(segment)
-                if next_seg == current:
-                    count += 1
-                    j += match_size
-                else:
-                    break
-            
-            if count > 1:  # Only store duplicates
-                results.append((i, ref_index, match_size, count, is_inverse))
-            else:  # Store non-duplicate as regular segment
-                results.append((i, ref_index, match_size, 1, is_inverse))
-            i = j
-        else:
-            # Store unmatched single base as is
-            results.append((i, -1, 1, 1, False))
-            i += 1
-    return results
+# Precompute max lengths for each position in query
+max_lengths = []
+for i in range(len(query)):
+    len_ref = find_max_length(sam_ref, query, i)
+    len_inv = find_max_length(sam_inv_ref, query, i)
+    max_len = max(len_ref, len_inv)
+    inverted = len_inv > len_ref or (len_inv == len_ref and len_inv > 0)
+    max_lengths.append( (max_len, inverted) )
 
-def reconstruct_query(duplicates, reference):
-    reconstructed = ''
-    last_idx = 0
-    
-    for query_idx, ref_idx, size, count, is_inverse in sorted(duplicates, key=lambda x: x[0]):
-        assert query_idx == last_idx, f"Gap in reconstruction at {last_idx} to {query_idx}"
-        
-        if ref_idx == -1:  # Unmatched base
-            reconstructed += query[query_idx]  # This is the only place we need original query
-        else:
-            segment = reference[ref_idx:ref_idx + size]
-            if is_inverse:
-                segment = inv(segment)
-            reconstructed += segment * count
-            
-        last_idx = query_idx + (size * count)
-    
-    return reconstructed
+# Process query to find all valid duplicates, considering maximum lengths and non-overlapping
+result = []
+i = 0
+while i < len(query):
+    if max_lengths[i][0] == 0:
+        i += 1
+        continue
+    # Start a duplicate block: initialize block length and duplicate count
+    block_len = max_lengths[i][0]
+    current_inverted = max_lengths[i][1]
+    start_sub = query[i:i+block_len]
+    count = 0
+    j = i
+    while j < len(query):
+        if max_lengths[j][0] == 0 or max_lengths[j][1] != current_inverted:
+            break
+        # Update block_len to the smallest max-length in the block
+        block_len = min(block_len, max_lengths[j][0])
+        # Verify that the current piece matches the starting block's prefix of length block_len
+        if query[j:j+block_len] != start_sub[:block_len]:
+            break
+        count += 1
+        j += block_len
+    duplicate_substr = query[i:i+block_len]
+    ref_substr = inv(duplicate_substr) if current_inverted else duplicate_substr
+    ref_start = reference.find(ref_substr)
+    result.append((ref_start, block_len, count, current_inverted))
+    i = j
 
-def main():
-    print(reference.__len__(), query.__len__())
-    duplicates = find_duplicates(reference, query)
-    print("Duplicates found:", duplicates)
-
-    reconstructed = reconstruct_query(duplicates, reference)
-    print("Reconstruction successful:", reconstructed == query)
-    if reconstructed != query:
-        print("Original length:", len(query))
-        print("Reconstructed length:", len(reconstructed))
-        # Find first difference
-        for i, (a, b) in enumerate(zip(query, reconstructed)):
-            if a != b:
-                print(f"First difference at index {i}: {a} vs {b}")
-                break
-
-if __name__ == '__main__':
-    main()
+# Output the result
+for entry in result:
+    print(f"{entry[0]} {entry[1]} {entry[2]} {entry[3]}")
