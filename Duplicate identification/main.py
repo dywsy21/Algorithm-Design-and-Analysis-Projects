@@ -6,7 +6,7 @@ with open('Duplicate identification/input/query.txt') as f:
 with open('Duplicate identification/input/reference.txt') as f:
     reference = f.read()
 
-""""from genome_utils import inv
+from genome_utils import inv
 
 def find_duplicates(reference, query):
     results = []
