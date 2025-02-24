@@ -18,6 +18,7 @@ def find_duplicates(reference, query):
         is_inverse = False
         ref_index = -1
         
+        # Find the longest matching segment
         for size in range(1, len(query) - i + 1):
             s = query[i:i+size]
             if s in reference:
@@ -32,62 +33,64 @@ def find_duplicates(reference, query):
                 break
                 
         if match_size > 0:
+            segment = query[i:i+match_size]
             count = 1
             j = i + match_size
+            # Validate consecutive matches
             while j + match_size <= len(query):
                 next_seg = query[j:j+match_size]
-                if next_seg == query[i:i+match_size] or next_seg == inv(query[i:i+match_size]):
+                current = segment if not is_inverse else inv(segment)
+                if next_seg == current:
                     count += 1
                     j += match_size
                 else:
                     break
-            results.append((i, ref_index, match_size, count, is_inverse))
+            
+            if count > 1:  # Only store duplicates
+                results.append((i, ref_index, match_size, count, is_inverse))
+            else:  # Store non-duplicate as regular segment
+                results.append((i, ref_index, match_size, 1, is_inverse))
             i = j
         else:
+            # Store unmatched single base as is
+            results.append((i, -1, 1, 1, False))
             i += 1
-    
-    # prune repeating count == 1 results
-    return [r for r in results if r[3] > 1]
+    return results
 
 def reconstruct_query(duplicates, reference):
     reconstructed = ''
-    last_query_idx = 0
+    last_idx = 0
     
-    # Sort by query index to reconstruct in order
-    sorted_dups = sorted(duplicates, key=lambda x: x[0])
-    
-    for query_idx, ref_idx, size, count, is_inverse in sorted_dups:
-        # Fill any gap before this match
-        if query_idx > last_query_idx:
-            missing_part = query[last_query_idx:query_idx]
-            reconstructed += missing_part
-            
-        # Get the matching segment from reference
-        segment = reference[ref_idx:ref_idx + size]
-        if is_inverse:
-            segment = inv(segment)
-            
-        # Add it count times
-        reconstructed += segment * count
-        last_query_idx = query_idx + (size * count)
-    
-    # Add any remaining part after the last match
-    if last_query_idx < len(query):
-        reconstructed += query[last_query_idx:]
+    for query_idx, ref_idx, size, count, is_inverse in sorted(duplicates, key=lambda x: x[0]):
+        assert query_idx == last_idx, f"Gap in reconstruction at {last_idx} to {query_idx}"
         
+        if ref_idx == -1:  # Unmatched base
+            reconstructed += query[query_idx]  # This is the only place we need original query
+        else:
+            segment = reference[ref_idx:ref_idx + size]
+            if is_inverse:
+                segment = inv(segment)
+            reconstructed += segment * count
+            
+        last_idx = query_idx + (size * count)
+    
     return reconstructed
 
-print(reference.__len__(), query.__len__())
-duplicates = find_duplicates(reference, query)
-print("Duplicates found:", duplicates)
+def main():
+    print(reference.__len__(), query.__len__())
+    duplicates = find_duplicates(reference, query)
+    print("Duplicates found:", duplicates)
 
-reconstructed = reconstruct_query(duplicates, reference)
-print("Reconstruction successful:", reconstructed == query)
-if reconstructed != query:
-    print("Original length:", len(query))
-    print("Reconstructed length:", len(reconstructed))
-    # Find first difference
-    for i, (a, b) in enumerate(zip(query, reconstructed)):
-        if a != b:
-            print(f"First difference at index {i}: {a} vs {b}")
-            break
+    reconstructed = reconstruct_query(duplicates, reference)
+    print("Reconstruction successful:", reconstructed == query)
+    if reconstructed != query:
+        print("Original length:", len(query))
+        print("Reconstructed length:", len(reconstructed))
+        # Find first difference
+        for i, (a, b) in enumerate(zip(query, reconstructed)):
+            if a != b:
+                print(f"First difference at index {i}: {a} vs {b}")
+                break
+
+if __name__ == '__main__':
+    main()
