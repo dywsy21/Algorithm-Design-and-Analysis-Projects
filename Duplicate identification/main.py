@@ -89,26 +89,22 @@ while i < len(query):
     if max_lengths[i][0] == 0:
         i += 1
         continue
-    # Start a duplicate block: initialize block length and duplicate count
-    block_len = max_lengths[i][0]
+    dup_len = max_lengths[i][0]
     current_inverted = max_lengths[i][1]
-    start_sub = query[i:i+block_len]
+    start_sub = query[i:i+dup_len]
     count = 0
     j = i
-    while j < len(query):
-        if max_lengths[j][0] == 0 or max_lengths[j][1] != current_inverted:
+    while j <= len(query) - dup_len:
+        # Instead of shrinking the duplicate length, require every duplicate to have at least dup_len characters.
+        if max_lengths[j][0] < dup_len or max_lengths[j][1] != current_inverted:
             break
-        # Update block_len to the smallest max-length in the block
-        block_len = min(block_len, max_lengths[j][0])
-        # Verify that the current piece matches the starting block's prefix of length block_len
-        if query[j:j+block_len] != start_sub[:block_len]:
+        if query[j:j+dup_len] != start_sub:
             break
         count += 1
-        j += block_len
-    duplicate_substr = query[i:i+block_len]
-    ref_substr = inv(duplicate_substr) if current_inverted else duplicate_substr
+        j += dup_len
+    ref_substr = inv(start_sub) if current_inverted else start_sub
     ref_start = reference.find(ref_substr)
-    result.append((ref_start, block_len, count, current_inverted))
+    result.append((ref_start, dup_len, count, current_inverted))
     i = j
 
 # Output the result
