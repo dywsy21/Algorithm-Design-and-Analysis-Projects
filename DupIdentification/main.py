@@ -1,4 +1,5 @@
 from genome_utils import inv
+from veriplot import *
 
 class State:
     def __init__(self):
@@ -60,10 +61,10 @@ def find_max_length(sam, query, start):
     return max_len
 
 # Read input
-with open('Duplicate identification/input/reference.txt') as f:
+with open('DupIdentification/input/reference.txt') as f:
     reference = f.read().strip('\n')
 
-with open('Duplicate identification/input/query.txt') as f:
+with open('DupIdentification/input/query.txt') as f:
     query = f.read().strip('\n')
 
 # Preprocess inv_reference
@@ -91,22 +92,25 @@ while i < len(query):
         continue
     dup_len = max_lengths[i][0]
     current_inverted = max_lengths[i][1]
-    start_sub = query[i:i+dup_len]
-    count = 0
-    j = i
+    substr = query[i:i+dup_len]
+    count = 1
+    j = i + dup_len
     while j <= len(query) - dup_len:
-        # Instead of shrinking the duplicate length, require every duplicate to have at least dup_len characters.
-        if max_lengths[j][0] < dup_len or max_lengths[j][1] != current_inverted:
-            break
-        if query[j:j+dup_len] != start_sub:
+        ml, inv_flag = max_lengths[j]
+        if ml < dup_len or inv_flag != current_inverted or query[j:j+dup_len] != substr:
             break
         count += 1
         j += dup_len
-    ref_substr = inv(start_sub) if current_inverted else start_sub
+    ref_substr = inv(substr) if current_inverted else substr
     ref_start = reference.find(ref_substr)
-    result.append((ref_start, dup_len, count, current_inverted))
+    # Save query start index as first element in result tuple.
+    result.append((i, ref_start, dup_len, count, current_inverted))
     i = j
 
 # Output the result
 for entry in result:
-    print(f"{entry[0]} {entry[1]} {entry[2]} {entry[3]}")
+    print(f"{entry[1]} {entry[2]} {entry[3]} {entry[4]}")
+
+# Call the new functions.
+verify(result, query, reference)
+plot_duplicate_mapping(result, query, reference)
