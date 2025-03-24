@@ -1,6 +1,6 @@
-from genome_utils import *
+from genome_utils import inv 
+import matplotlib.pyplot as plt
 
-# New function to verify duplicates and plot duplicate blocks (existing functionality)
 def verify(result, query, reference):
     verified = True
     for (q_idx, ref_start, dup_len, count, inverted) in result:
@@ -14,20 +14,13 @@ def verify(result, query, reference):
     if verified:
         print("All duplicates verified successfully.")
 
-# New function to plot duplicate mapping:
 def plot_duplicate_mapping(result, query, reference):
-    import matplotlib.pyplot as plt
     mapping_x = []
     mapping_y = []
-    # For each duplicate block, compute mapping for each base
     for (q_idx, ref_start, dup_len, count, inverted) in result:
         for occ in range(count):
-            # For each occurrence in query:
             for b in range(dup_len):
-                # Query index:
                 q_pos = q_idx + occ * dup_len + b
-                # For non-inverted, reference mapping is straightforward;
-                # for inverted, the first base of query corresponds to last base of reference block.
                 if not inverted:
                     r_pos = ref_start + b
                 else:
@@ -41,3 +34,6 @@ def plot_duplicate_mapping(result, query, reference):
     plt.title("Mapping of Duplicate Bases from Query to Reference")
     plt.show()
 
+def veriplot(result, query, reference):
+    verify(result, query, reference)
+    plot_duplicate_mapping(result, query, reference)
