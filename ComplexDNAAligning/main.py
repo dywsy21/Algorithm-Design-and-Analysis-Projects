@@ -274,7 +274,7 @@ def find_matches_in_large_region(query_region, ref, max_segment_size=MAX_SEGMENT
         overlap = LARGE_REGION_OVERLAP  # Larger overlap for very large regions
     else:
         chunk_size = max_segment_size
-        overlap = chunk_size // STANDARD_CHUNK_OVERLAP_RATIO  # One third overlap
+        overlap = int(chunk_size // STANDARD_CHUNK_OVERLAP_RATIO)  # One third overlap
     
     # Process region in overlapping chunks with adaptive parameters
     for i in range(0, region_len, chunk_size - overlap):
@@ -727,19 +727,35 @@ def find_alignment(query, ref, min_match_length=MIN_MATCH_LENGTH):
     gc_content = (query.count('G') + query.count('C')) / len(query)
     print('gc_content: ', gc_content)
     
-    # Adaptive parameters based on sequence properties
-    if seq_length < SHORT_SEQ_THRESHOLD:
-        if gc_content > HIGH_GC_CONTENT:  # High GC content needs larger k
-            k_values = SHORT_SEQ_HIGH_GC_K_VALUES
+    # More granular adaptive parameters based on sequence GC content
+    if seq_length < VERY_SHORT_SEQ_THRESHOLD:
+        # Very short sequences (like dataset 2) need special handling
+        k_values = VERY_SHORT_SEQ_K_VALUES
+        min_match_length = VERY_SHORT_SEQ_MIN_MATCH_LENGTH
+        stride = VERY_SHORT_SEQ_STRIDE
+        max_errors = HIGH_GC_MAX_ERRORS
+    elif seq_length < SHORT_SEQ_THRESHOLD:
+        # Short sequences need balanced parameters
+        if gc_content < LOW_GC_THRESHOLD:
+            k_values = LOW_GC_K_VALUES
+            max_errors = LOW_GC_MAX_ERRORS
+        elif gc_content < HIGH_GC_THRESHOLD:
+            k_values = MED_GC_K_VALUES
+            max_errors = LOW_GC_MAX_ERRORS + 1  # Balanced
         else:
-            k_values = SHORT_SEQ_LOW_GC_K_VALUES
-        max_errors = SHORT_SEQ_MAX_ERRORS 
+            k_values = HIGH_GC_K_VALUES
+            max_errors = HIGH_GC_MAX_ERRORS
     else:
-        if gc_content > HIGH_GC_CONTENT:
-            k_values = LONG_SEQ_HIGH_GC_K_VALUES
+        # Long sequences (like dataset 1)
+        if gc_content < LOW_GC_THRESHOLD:
+            k_values = LOW_GC_K_VALUES
+            max_errors = LOW_GC_MAX_ERRORS
+        elif gc_content < HIGH_GC_THRESHOLD:
+            k_values = MED_GC_K_VALUES
+            max_errors = LOW_GC_MAX_ERRORS + 1  # Balanced
         else:
-            k_values = LONG_SEQ_LOW_GC_K_VALUES
-        max_errors = LONG_SEQ_MAX_ERRORS
+            k_values = HIGH_GC_K_VALUES
+            max_errors = HIGH_GC_MAX_ERRORS
     
     # Collect anchors from different k-mer sizes
     forward_anchors = []
@@ -749,7 +765,11 @@ def find_alignment(query, ref, min_match_length=MIN_MATCH_LENGTH):
         print(f"Finding anchors with k={k}...")
         
         # Adaptive stride based on k-mer size and sequence properties
-        stride = max(1, k - 5)
+        # For very short sequences, use minimal stride
+        if seq_length < VERY_SHORT_SEQ_THRESHOLD:
+            stride = VERY_SHORT_SEQ_STRIDE
+        else:
+            stride = max(1, k - 5)
         
         # Find forward and reverse anchors
         f_anchors = find_anchors(query, ref, k, min_match_length, stride, max_errors)
@@ -760,9 +780,15 @@ def find_alignment(query, ref, min_match_length=MIN_MATCH_LENGTH):
         forward_anchors.extend(f_anchors)
         reverse_anchors.extend(r_anchors)
     
+    # Use adaptive overlap threshold based on GC content
+    overlap_threshold = HIGH_QUALITY_OVERLAP_THRESHOLD
+    if gc_content < LOW_GC_THRESHOLD:
+        # For lower GC content (like dataset 1), be more selective with overlaps
+        overlap_threshold = HIGH_QUALITY_OVERLAP_THRESHOLD + 0.02
+    
     # Filter combined anchor sets to remove duplicates with improved strategy
-    forward_anchors = filter_anchors(forward_anchors, HIGH_QUALITY_OVERLAP_THRESHOLD)
-    reverse_anchors = filter_anchors(reverse_anchors, HIGH_QUALITY_OVERLAP_THRESHOLD)
+    forward_anchors = filter_anchors(forward_anchors, overlap_threshold)
+    reverse_anchors = filter_anchors(reverse_anchors, overlap_threshold)
     
     print(f"After filtering: {len(forward_anchors)} forward, {len(reverse_anchors)} reverse anchors")
     
@@ -866,7 +892,9 @@ def main():
         print(f"Reference length: {len(ref)}")
         
         start_time = time.time()
-        alignment = find_alignment(query, ref, min_match_length=30)
+        # Use the default min_match_length from config
+        # The find_alignment function will adapt based on sequence properties
+        alignment = find_alignment(query, ref)
         end_time = time.time()
         
         print(f"Time taken: {end_time - start_time:.2f} seconds")
