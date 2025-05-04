@@ -3,6 +3,7 @@ import sys
 import time
 import os
 import heapq
+import random
 
 def read_sequence(file_path):
     """Read DNA sequence from file"""
@@ -118,11 +119,29 @@ def extend_match(query, ref, q_start, r_start, k, min_match_length=30, max_error
     
     # Calculate alignment quality metrics
     match_length = q_end - q_start
-    identity = matches / match_length if match_length > 0 else 0
+    if match_length > 0:
+        # Calculate a more accurate identity metric considering indels
+        q_segment = query[q_start:q_end]
+        r_segment = ref[r_start:r_end]
+        
+        # Use more sophisticated identity calculation for better accuracy
+        identity = matches / match_length
+        
+        # Adjust identity score based on local context
+        if match_length > 50:
+            # For longer matches, check local context
+            context_size = min(20, match_length // 4)
+            
+            # Check left context if possible
+            if q_start >= context_size and r_start >= context_size:
+                left_q = query[q_start-context_size:q_start]
+                left_r = ref[r_start-context_size:r_start]
+                left_matches = sum(1 for i in range(context_size) if left_q[i] == left_r[i])
+                identity = (identity * match_length + left_matches * 0.5) / (match_length + context_size * 0.5)
     
-    if match_length >= min_match_length and identity >= 0.75:  # At least 75% identity
-        # Score calculation: prioritize longer matches with higher identity
-        score = match_length * identity * (1 - 0.05 * errors)  # Penalize errors slightly
+    if match_length >= min_match_length and identity >= 0.75:
+        # Score calculation with enhanced context awareness
+        score = match_length * identity * (1 - 0.05 * errors)
         return (q_start, q_end, r_start, r_end, score, identity)
     else:
         return None
@@ -237,7 +256,7 @@ def find_uncovered_regions(query, segments):
     
     return uncovered
 
-def find_matches_in_large_region(query_region, ref, max_segment_size=500, min_match_length=20):
+def find_matches_in_large_region(query_region, ref, max_segment_size=500, min_match_length=20, max_errors=5):
     """Find multiple matches for a large uncovered region using a divide-and-conquer approach"""
     region_len = len(query_region)
     
@@ -245,70 +264,86 @@ def find_matches_in_large_region(query_region, ref, max_segment_size=500, min_ma
     if region_len <= max_segment_size:
         return find_matches_in_region(query_region, ref, min_match_length)
     
-    # For large regions, divide into smaller chunks and find matches for each
     matches = []
-    chunk_size = max_segment_size
     
-    # Process the region in overlapping chunks
-    for i in range(0, region_len, chunk_size // 2):
-        # Define chunk boundaries
+    # Adaptive chunk size based on region length
+    if region_len > 5000:
+        chunk_size = 600
+        overlap = 200  # Larger overlap for very large regions
+    else:
+        chunk_size = max_segment_size
+        overlap = chunk_size // 3  # One third overlap
+    
+    # Process region in overlapping chunks with adaptive parameters
+    for i in range(0, region_len, chunk_size - overlap):
         chunk_start = i
         chunk_end = min(i + chunk_size, region_len)
         
-        # Extract chunk
+        # Skip very small remaining chunks
+        if chunk_end - chunk_start < min_match_length:
+            continue
+            
         chunk = query_region[chunk_start:chunk_end]
         
-        # Find matches for this chunk with different k-mer sizes
-        k_values = [6, 8, 10] if len(chunk) > 100 else [5, 6, 7]
-        
+        # Adjust k-mer size based on chunk length
+        chunk_len = len(chunk)
+        if chunk_len < 100:
+            k_values = [5, 6]
+        elif chunk_len < 300:
+            k_values = [6, 7, 8]
+        else:
+            k_values = [7, 8, 9]
+            
+        # Try multiple k-mer sizes per chunk for better sensitivity
         for k in k_values:
-            if k >= len(chunk):
+            if k >= chunk_len:
                 continue
                 
-            # Find anchors for this chunk
-            chunk_matches = []
+            # More sensitive parameters for boundary chunks
+            increased_sensitivity = (i == 0 or chunk_end == region_len)
+            max_errors_adj = max_errors + 2 if increased_sensitivity else max_errors
             
-            # Try both forward and reverse matching
+            # Find forward and reverse anchors
             forward_anchors = find_anchors(chunk, ref, k=k, min_match_length=min_match_length, 
-                                         stride=1, max_errors=max(3, min_match_length // 10))
+                                         stride=1, max_errors=max_errors_adj)
             
-            # Adjust coordinates to match the original query
+            # Adjust coords and add to matches
             for q_s, q_e, r_s, r_e, score, identity in forward_anchors:
-                chunk_matches.append((q_s + chunk_start, q_e + chunk_start, r_s, r_e, score, identity, 'f'))
+                matches.append((q_s + chunk_start, q_e + chunk_start, r_s, r_e, score, identity, 'f'))
             
-            # Also try reverse complement matching 
+            # Try reverse complement matching similarly
             rev_ref = reverse_complement(ref)
             rev_anchors = find_anchors(chunk, rev_ref, k=k, min_match_length=min_match_length, 
-                                     stride=1, max_errors=max(3, min_match_length // 10))
+                                     stride=1, max_errors=max_errors_adj)
             
-            # Adjust coordinates for reverse matches
+            # Adjust coords for reverse matches
             for q_s, q_e, r_s, r_e, score, identity in rev_anchors:
                 orig_r_start = len(ref) - r_e
                 orig_r_end = len(ref) - r_s
-                chunk_matches.append((q_s + chunk_start, q_e + chunk_start, 
-                                    orig_r_start, orig_r_end, score, identity, 'r'))
-            
-            # Add this chunk's matches to overall matches
-            matches.extend(chunk_matches)
+                matches.append((q_s + chunk_start, q_e + chunk_start, 
+                              orig_r_start, orig_r_end, score, identity, 'r'))
     
-    # Filter out overlapping matches
+    # Enhanced filtering with adaptive overlap threshold
     if matches:
-        # Sort by score and filter
-        matches.sort(key=lambda x: x[4], reverse=True)
+        matches.sort(key=lambda x: x[4], reverse=True)  # Sort by score
         
         filtered = []
         excluded = set()
         
+        # Use adaptive overlap threshold based on match length
         for i, match_i in enumerate(matches):
             if i in excluded:
                 continue
                 
             filtered.append(match_i)
-            q_start_i, q_end_i = match_i[0], match_i[1]
+            q_start_i, q_end_i, r_start_i, r_end_i, score_i, identity_i, _ = match_i
+            match_len_i = q_end_i - q_start_i
             
-            # Mark overlapping matches for exclusion
-            for j in range(i+1, len(matches)):
-                if j in excluded:
+            # Adaptive threshold: allow less overlap for longer, high-identity matches
+            overlap_threshold = 0.5 if identity_i > 0.9 and match_len_i > 100 else 0.7
+            
+            for j in range(len(matches)):
+                if j == i or j in excluded:
                     continue
                     
                 q_start_j, q_end_j = matches[j][0], matches[j][1]
@@ -319,14 +354,16 @@ def find_matches_in_large_region(query_region, ref, max_segment_size=500, min_ma
                 overlap = max(0, overlap_end - overlap_start)
                 
                 min_len = min(q_end_i - q_start_i, q_end_j - q_start_j)
-                if overlap > 0.5 * min_len:  # If more than 50% overlap
+                overlap_ratio = overlap / min_len if min_len > 0 else 0
+                
+                if overlap_ratio > overlap_threshold:
                     excluded.add(j)
         
         return filtered
     
     return []
 
-def find_matches_in_region(query_region, ref, min_match_length=20):
+def find_matches_in_region(query_region, ref, min_match_length=20, max_errors=5):
     """Find matches for a smaller region"""
     segment_len = len(query_region)
     
@@ -685,12 +722,20 @@ def find_alignment(query, ref, min_match_length=30):
     """Find optimal alignment between query and reference handling complex structural variations"""
     # Strategy: Try different k-mer sizes to balance sensitivity and specificity
     seq_length = min(len(query), len(ref))
+    gc_content = (query.count('G') + query.count('C')) / len(query)
     
+    # Adaptive parameters based on sequence properties
     if seq_length < 3000:
-        k_values = [6, 7, 8]
+        if gc_content > 0.55:  # High GC content needs larger k
+            k_values = [7, 8, 9]
+        else:
+            k_values = [6, 7, 8]
         max_errors = 3 
     else:
-        k_values = [8, 9, 10]
+        if gc_content > 0.55:
+            k_values = [9, 10, 11]
+        else:
+            k_values = [8, 9, 10]
         max_errors = 5
     
     # Collect anchors from different k-mer sizes
@@ -700,7 +745,7 @@ def find_alignment(query, ref, min_match_length=30):
     for k in k_values:
         print(f"Finding anchors with k={k}...")
         
-        # Adjust stride based on k-mer size
+        # Adaptive stride based on k-mer size and sequence properties
         stride = max(1, k - 5)
         
         # Find forward and reverse anchors
@@ -712,7 +757,7 @@ def find_alignment(query, ref, min_match_length=30):
         forward_anchors.extend(f_anchors)
         reverse_anchors.extend(r_anchors)
     
-    # Filter combined anchor sets to remove duplicates
+    # Filter combined anchor sets to remove duplicates with improved strategy
     forward_anchors = filter_anchors(forward_anchors, 0.5)
     reverse_anchors = filter_anchors(reverse_anchors, 0.5)
     
