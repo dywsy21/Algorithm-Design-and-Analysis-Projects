@@ -4,6 +4,8 @@ import time
 import os
 import heapq
 import random
+# Import config parameters
+from config import *
 
 def read_sequence(file_path):
     """Read DNA sequence from file"""
@@ -15,7 +17,7 @@ def reverse_complement(seq):
     complement = {'A': 'T', 'C': 'G', 'G': 'C', 'T': 'A'}
     return ''.join(complement.get(base, 'N') for base in reversed(seq))
 
-def find_exact_matches(query, ref, k=11):
+def find_exact_matches(query, ref, k=DEFAULT_K):
     """Find exact matches of length k between query and reference"""
     # Create hash table for reference k-mers
     ref_kmers = defaultdict(list)
@@ -33,7 +35,7 @@ def find_exact_matches(query, ref, k=11):
     
     return matches
 
-def extend_match(query, ref, q_start, r_start, k, min_match_length=30, max_errors=5):
+def extend_match(query, ref, q_start, r_start, k, min_match_length=MIN_MATCH_LENGTH, max_errors=EXTEND_MAX_ERRORS):
     """Extend a k-mer match to a longer anchor with error tolerance"""
     q_end = q_start + k
     r_end = r_start + k
@@ -139,14 +141,14 @@ def extend_match(query, ref, q_start, r_start, k, min_match_length=30, max_error
                 left_matches = sum(1 for i in range(context_size) if left_q[i] == left_r[i])
                 identity = (identity * match_length + left_matches * 0.5) / (match_length + context_size * 0.5)
     
-    if match_length >= min_match_length and identity >= 0.75:
+    if match_length >= min_match_length and identity >= MIN_IDENTITY_THRESHOLD:
         # Score calculation with enhanced context awareness
         score = match_length * identity * (1 - 0.05 * errors)
         return (q_start, q_end, r_start, r_end, score, identity)
     else:
         return None
 
-def find_anchors(query, ref, k=11, min_match_length=30, stride=3, max_errors=5):
+def find_anchors(query, ref, k=DEFAULT_K, min_match_length=MIN_MATCH_LENGTH, stride=DEFAULT_STRIDE, max_errors=DEFAULT_MAX_ERRORS):
     """Find anchor regions between query and reference"""
     exact_matches = find_exact_matches(query, ref, k)
     anchors = []
@@ -172,7 +174,7 @@ def find_anchors(query, ref, k=11, min_match_length=30, stride=3, max_errors=5):
     # Filter out overlapping and low-quality anchors
     return filter_anchors(anchors)
 
-def filter_anchors(anchors, overlap_threshold=0.7):
+def filter_anchors(anchors, overlap_threshold=DEFAULT_OVERLAP_THRESHOLD):
     """Filter and prioritize anchors based on quality and overlap"""
     if not anchors:
         return []
@@ -216,7 +218,7 @@ def filter_anchors(anchors, overlap_threshold=0.7):
     
     return sorted(filtered, key=lambda x: x[0])  # Sort by query start for next steps
 
-def find_reverse_anchors(query, ref, k=11, min_match_length=30, stride=3, max_errors=5):
+def find_reverse_anchors(query, ref, k=DEFAULT_K, min_match_length=MIN_MATCH_LENGTH, stride=DEFAULT_STRIDE, max_errors=DEFAULT_MAX_ERRORS):
     """Find anchors between query and reverse complement of reference"""
     rev_ref = reverse_complement(ref)
     anchors = find_anchors(query, rev_ref, k, min_match_length, stride, max_errors)
@@ -256,7 +258,7 @@ def find_uncovered_regions(query, segments):
     
     return uncovered
 
-def find_matches_in_large_region(query_region, ref, max_segment_size=500, min_match_length=20, max_errors=5):
+def find_matches_in_large_region(query_region, ref, max_segment_size=MAX_SEGMENT_SIZE, min_match_length=MIN_MATCH_LENGTH, max_errors=DEFAULT_MAX_ERRORS):
     """Find multiple matches for a large uncovered region using a divide-and-conquer approach"""
     region_len = len(query_region)
     
@@ -268,11 +270,11 @@ def find_matches_in_large_region(query_region, ref, max_segment_size=500, min_ma
     
     # Adaptive chunk size based on region length
     if region_len > 5000:
-        chunk_size = 600
-        overlap = 200  # Larger overlap for very large regions
+        chunk_size = LARGE_REGION_CHUNK_SIZE
+        overlap = LARGE_REGION_OVERLAP  # Larger overlap for very large regions
     else:
         chunk_size = max_segment_size
-        overlap = chunk_size // 3  # One third overlap
+        overlap = chunk_size // STANDARD_CHUNK_OVERLAP_RATIO  # One third overlap
     
     # Process region in overlapping chunks with adaptive parameters
     for i in range(0, region_len, chunk_size - overlap):
@@ -288,11 +290,11 @@ def find_matches_in_large_region(query_region, ref, max_segment_size=500, min_ma
         # Adjust k-mer size based on chunk length
         chunk_len = len(chunk)
         if chunk_len < 100:
-            k_values = [5, 6]
+            k_values = VERY_SHORT_SEGMENT_K_VALUES
         elif chunk_len < 300:
-            k_values = [6, 7, 8]
+            k_values = SHORT_SEGMENT_K_VALUES
         else:
-            k_values = [7, 8, 9]
+            k_values = LONGER_SEGMENT_K_VALUES
             
         # Try multiple k-mer sizes per chunk for better sensitivity
         for k in k_values:
@@ -301,7 +303,7 @@ def find_matches_in_large_region(query_region, ref, max_segment_size=500, min_ma
                 
             # More sensitive parameters for boundary chunks
             increased_sensitivity = (i == 0 or chunk_end == region_len)
-            max_errors_adj = max_errors + 2 if increased_sensitivity else max_errors
+            max_errors_adj = max_errors + BOUNDARY_EXTRA_ERRORS if increased_sensitivity else max_errors
             
             # Find forward and reverse anchors
             forward_anchors = find_anchors(chunk, ref, k=k, min_match_length=min_match_length, 
@@ -340,7 +342,7 @@ def find_matches_in_large_region(query_region, ref, max_segment_size=500, min_ma
             match_len_i = q_end_i - q_start_i
             
             # Adaptive threshold: allow less overlap for longer, high-identity matches
-            overlap_threshold = 0.5 if identity_i > 0.9 and match_len_i > 100 else 0.7
+            overlap_threshold = HIGH_QUALITY_OVERLAP_THRESHOLD if identity_i > 0.9 and match_len_i > 100 else DEFAULT_OVERLAP_THRESHOLD
             
             for j in range(len(matches)):
                 if j == i or j in excluded:
@@ -363,17 +365,17 @@ def find_matches_in_large_region(query_region, ref, max_segment_size=500, min_ma
     
     return []
 
-def find_matches_in_region(query_region, ref, min_match_length=20, max_errors=5):
+def find_matches_in_region(query_region, ref, min_match_length=MIN_MATCH_LENGTH, max_errors=DEFAULT_MAX_ERRORS):
     """Find matches for a smaller region"""
     segment_len = len(query_region)
     
     # Use smaller k for shorter segments
     if segment_len < 50:
-        k_size = 5
+        k_size = SMALL_K_FOR_SHORT_SEGMENTS
     elif segment_len < 100:
-        k_size = 6
+        k_size = MEDIUM_K_FOR_SHORT_SEGMENTS
     else:
-        k_size = 8
+        k_size = LARGE_K_FOR_SHORT_SEGMENTS
     
     matches = []
     
@@ -418,7 +420,7 @@ def ensure_complete_coverage(query, ref, segments):
         print(f"Processing uncovered region {i+1}/{len(uncovered)}: positions {start}-{end} (length: {region_len})")
         
         # Skip very small regions
-        if region_len < 5:
+        if region_len < VERY_SMALL_REGION_THRESHOLD:
             print(f"  Skipping very small region (length: {region_len})")
             # Small gap handling can be done in the merging stage
             continue
@@ -475,9 +477,9 @@ def ensure_complete_coverage(query, ref, segments):
             print(f"  No matches found for region. Creating segments to ensure coverage.")
             
             # If no matches found for a large region, divide it into smaller segments
-            if region_len > 500:
+            if region_len > MAX_SEGMENT_SIZE:
                 # Divide into chunks of approximately 300bp
-                chunk_size = 300
+                chunk_size = SMALL_SEGMENT_LENGTH
                 for chunk_start in range(0, region_len, chunk_size):
                     chunk_end = min(chunk_start + chunk_size, region_len)
                     q_chunk_start = start + chunk_start
@@ -491,7 +493,7 @@ def ensure_complete_coverage(query, ref, segments):
                     best_score = -1
                     
                     # Try a few random positions in ref
-                    sample_step = max(1, len(ref) // 20)  # Try ~20 positions
+                    sample_step = max(1, len(ref) // SAMPLE_POSITIONS_COUNT)  # Try ~20 positions
                     for r_pos in range(0, len(ref) - len(chunk) + 1, sample_step):
                         ref_chunk = ref[r_pos:r_pos + len(chunk)]
                         matches = sum(1 for i in range(len(chunk)) if i < len(ref_chunk) and chunk[i] == ref_chunk[i])
@@ -613,7 +615,7 @@ def evaluate_segment(query, ref, q_start, q_end, r_start, r_end):
     score = matches - 0.5 * (max_len - min_len)
     return score
 
-def is_valid_segment(q_start, q_end, r_start, r_end, min_size=30):
+def is_valid_segment(q_start, q_end, r_start, r_end, min_size=MIN_MATCH_LENGTH):
     """Check if a segment is valid (minimum size and proper coordinates)"""
     return (q_end >= q_start and r_end >= r_start and
             q_end - q_start + 1 >= min_size and
@@ -687,7 +689,7 @@ def find_maximum_weight_path(graph, segments):
     
     return path[::-1]  # Reverse to get the correct order
 
-def merge_adjacent_segments(segments, max_gap=20):
+def merge_adjacent_segments(segments, max_gap=ADJACENT_MERGE_MAX_GAP):
     """Merge adjacent or nearly adjacent segments"""
     if not segments:
         return []
@@ -708,7 +710,7 @@ def merge_adjacent_segments(segments, max_gap=20):
         
         # Check if segments are adjacent or nearly adjacent and have consistent gaps
         if (q_gap <= max_gap and r_gap <= max_gap and 
-            abs(q_gap - r_gap) <= max(5, min(q_gap, r_gap) * 0.5)):
+            abs(q_gap - r_gap) <= max(5, min(q_gap, r_gap) * MAX_GAP_RATIO_DIFFERENCE)):
             # Merge segments
             current = (q_curr_start, q_next_end, r_curr_start, r_next_end)
         else:
@@ -718,25 +720,26 @@ def merge_adjacent_segments(segments, max_gap=20):
     merged.append(current)
     return merged
 
-def find_alignment(query, ref, min_match_length=30):
+def find_alignment(query, ref, min_match_length=MIN_MATCH_LENGTH):
     """Find optimal alignment between query and reference handling complex structural variations"""
     # Strategy: Try different k-mer sizes to balance sensitivity and specificity
     seq_length = min(len(query), len(ref))
     gc_content = (query.count('G') + query.count('C')) / len(query)
+    print('gc_content: ', gc_content)
     
     # Adaptive parameters based on sequence properties
-    if seq_length < 3000:
-        if gc_content > 0.55:  # High GC content needs larger k
-            k_values = [7, 8, 9]
+    if seq_length < SHORT_SEQ_THRESHOLD:
+        if gc_content > HIGH_GC_CONTENT:  # High GC content needs larger k
+            k_values = SHORT_SEQ_HIGH_GC_K_VALUES
         else:
-            k_values = [6, 7, 8]
-        max_errors = 3 
+            k_values = SHORT_SEQ_LOW_GC_K_VALUES
+        max_errors = SHORT_SEQ_MAX_ERRORS 
     else:
-        if gc_content > 0.55:
-            k_values = [9, 10, 11]
+        if gc_content > HIGH_GC_CONTENT:
+            k_values = LONG_SEQ_HIGH_GC_K_VALUES
         else:
-            k_values = [8, 9, 10]
-        max_errors = 5
+            k_values = LONG_SEQ_LOW_GC_K_VALUES
+        max_errors = LONG_SEQ_MAX_ERRORS
     
     # Collect anchors from different k-mer sizes
     forward_anchors = []
@@ -758,8 +761,8 @@ def find_alignment(query, ref, min_match_length=30):
         reverse_anchors.extend(r_anchors)
     
     # Filter combined anchor sets to remove duplicates with improved strategy
-    forward_anchors = filter_anchors(forward_anchors, 0.5)
-    reverse_anchors = filter_anchors(reverse_anchors, 0.5)
+    forward_anchors = filter_anchors(forward_anchors, HIGH_QUALITY_OVERLAP_THRESHOLD)
+    reverse_anchors = filter_anchors(reverse_anchors, HIGH_QUALITY_OVERLAP_THRESHOLD)
     
     print(f"After filtering: {len(forward_anchors)} forward, {len(reverse_anchors)} reverse anchors")
     
@@ -818,13 +821,13 @@ def find_alignment(query, ref, min_match_length=30):
         initial_segments.append(current)
     
     # Merge adjacent segments
-    merged_segments = merge_adjacent_segments(initial_segments, max_gap=30)
+    merged_segments = merge_adjacent_segments(initial_segments, max_gap=ADJACENT_MERGE_MAX_GAP)
     
     # Ensure complete coverage of the query with fine-grained matching for large gaps
     complete_segments = ensure_complete_coverage(query, ref, merged_segments)
     
     # Final merging pass to clean up
-    final_segments = merge_adjacent_segments(complete_segments, max_gap=20)
+    final_segments = merge_adjacent_segments(complete_segments, max_gap=FINAL_MERGE_MAX_GAP)
     
     # Convert to output format: (q_start, q_end-1, r_start, r_end-1)
     # The -1 adjustment is because our internal representation is inclusive at both ends
