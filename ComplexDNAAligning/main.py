@@ -211,6 +211,85 @@ def find_reverse_anchors(query, ref, k=11, min_match_length=30, stride=3, max_er
     
     return rev_anchors
 
+def find_uncovered_regions(query, segments):
+    """Find regions in the query that are not covered by any segment"""
+    if not segments:
+        return [(0, len(query) - 1)]  # Return the entire query if no segments
+    
+    # Sort segments by query start position
+    sorted_segments = sorted(segments, key=lambda x: x[0])
+    
+    # Find uncovered regions
+    uncovered = []
+    current_pos = 0
+    
+    for q_start, q_end, _, _ in sorted_segments:
+        # Add uncovered region if there's a gap
+        if q_start > current_pos:
+            uncovered.append((current_pos, q_start - 1))
+        
+        # Update current position
+        current_pos = max(current_pos, q_end + 1)
+    
+    # Check if there's a gap at the end
+    if current_pos < len(query):
+        uncovered.append((current_pos, len(query) - 1))
+    
+    return uncovered
+
+def find_matches_in_region(query, ref, q_start, q_end, min_len=20):
+    """Find potential matches for an uncovered region with more sensitive parameters"""
+    query_segment = query[q_start:q_end+1]
+    segment_len = len(query_segment)
+    
+    # Adjust k-mer size based on segment length
+    if segment_len < 50:
+        k_size = 5  # Use smaller k for short segments
+    elif segment_len < 100:
+        k_size = 7
+    else:
+        k_size = 8
+    
+    # Find possible matches with more sensitive parameters
+    matches = []
+    
+    # Try both forward and reverse complement matching
+    forward_anchors = find_anchors(query_segment, ref, k=k_size, min_match_length=min_len, stride=1, max_errors=8)
+    
+    # Adjust coordinates to match the original query
+    for q_s, q_e, r_s, r_e, score, identity in forward_anchors:
+        matches.append((q_s + q_start, q_e + q_start, r_s, r_e, score, identity, 'f'))
+    
+    # Also try reverse complement matching for this region
+    rev_ref = reverse_complement(ref)
+    rev_anchors = find_anchors(query_segment, rev_ref, k=k_size, min_match_length=min_len, stride=1, max_errors=8)
+    
+    # Adjust coordinates for reverse matches
+    for q_s, q_e, r_s, r_e, score, identity in rev_anchors:
+        orig_r_start = len(ref) - r_e
+        orig_r_end = len(ref) - r_s
+        matches.append((q_s + q_start, q_e + q_start, orig_r_start, orig_r_end, score, identity, 'r'))
+    
+    # Sort by score and filter overlaps
+    if matches:
+        matches.sort(key=lambda x: x[4], reverse=True)
+        
+        # Take top matches that don't significantly overlap
+        filtered = []
+        covered = set()
+        
+        for match in matches:
+            q_s, q_e = match[0], match[1]
+            # Check if most of this match is already covered
+            overlap = sum(1 for i in range(q_s, q_e) if i in covered)
+            if overlap < 0.8 * (q_e - q_s):  # If less than 80% overlaps
+                filtered.append(match)
+                covered.update(range(q_s, q_e))
+        
+        return filtered
+    
+    return []
+
 def evaluate_segment(query, ref, q_start, q_end, r_start, r_end):
     """Calculate the edit distance-based score for a segment"""
     q_segment = query[q_start:q_end+1]
@@ -304,57 +383,6 @@ def find_maximum_weight_path(graph, segments):
     
     return path[::-1]  # Reverse to get the correct order
 
-def combine_forward_reverse_segments(forward_segments, reverse_segments, query_len):
-    """Combine and filter forward and reverse segments to maximize coverage and avoid overlaps"""
-    # Create a unified segment list with direction information
-    all_segments = [(q_start, q_end, r_start, r_end, score, identity, 'f') 
-                    for q_start, q_end, r_start, r_end, score, identity in forward_segments]
-    
-    all_segments.extend([(q_start, q_end, r_start, r_end, score, identity, 'r') 
-                         for q_start, q_end, r_start, r_end, score, identity in reverse_segments])
-    
-    # Sort by query position
-    all_segments.sort(key=lambda x: x[0])
-    
-    # Build a unified graph
-    graph = {i: [] for i in range(len(all_segments))}
-    
-    # Add source and sink nodes
-    graph[-1] = []
-    graph[len(all_segments)] = []
-    
-    # Connect source to all nodes
-    for i in range(len(all_segments)):
-        graph[-1].append((i, all_segments[i][4]))
-    
-    # Connect all nodes to sink
-    for i in range(len(all_segments)):
-        graph[i].append((len(all_segments), 0))
-    
-    # Connect compatible segments
-    for i in range(len(all_segments)):
-        q_end_i = all_segments[i][1]
-        
-        for j in range(i + 1, len(all_segments)):
-            q_start_j = all_segments[j][0]
-            
-            # If segments don't overlap in query
-            if q_start_j > q_end_i:
-                # Add edge with weight = score of destination segment
-                graph[i].append((j, all_segments[j][4]))
-    
-    # Find optimal path
-    path = find_maximum_weight_path(graph, all_segments)
-    
-    # Convert to final segment list
-    final_segments = []
-    for idx in path:
-        if idx < len(all_segments):
-            q_start, q_end, r_start, r_end, _, _, _ = all_segments[idx]
-            final_segments.append((q_start, q_end, r_start, r_end))
-    
-    return final_segments
-
 def merge_adjacent_segments(segments, max_gap=20):
     """Merge adjacent or nearly adjacent segments"""
     if not segments:
@@ -386,16 +414,148 @@ def merge_adjacent_segments(segments, max_gap=20):
     merged.append(current)
     return merged
 
+def extend_coverage(query, ref, initial_segments):
+    """Extend the coverage of the query by finding matches for uncovered regions"""
+    # Start with the initial segments
+    all_segments = list(initial_segments)
+    
+    # Find uncovered regions
+    uncovered = find_uncovered_regions(query, all_segments)
+    
+    print(f"Initial segments cover {len(query) - sum(u[1]-u[0]+1 for u in uncovered)} of {len(query)} bases ({len(uncovered)} gaps)")
+    
+    # Process each uncovered region to find potential matches
+    for gap_idx, (gap_start, gap_end) in enumerate(uncovered):
+        gap_len = gap_end - gap_start + 1
+        
+        # Skip very small gaps (less than 15bp) as they might just be mismatches
+        if gap_len < 15:
+            continue
+        
+        print(f"Processing gap {gap_idx+1}/{len(uncovered)} of length {gap_len}...")
+        
+        # Find potential matches for this gap
+        gap_matches = find_matches_in_region(query, ref, gap_start, gap_end)
+        
+        if gap_matches:
+            print(f"  Found {len(gap_matches)} potential matches for gap")
+            # Add non-overlapping matches to our segments
+            for q_start, q_end, r_start, r_end, _, _, _ in gap_matches:
+                # Check for overlaps with existing segments
+                overlaps = False
+                for i, (s_start, s_end, _, _) in enumerate(all_segments):
+                    # Check if there's significant overlap
+                    if max(0, min(s_end, q_end) - max(s_start, q_start)) > 0:
+                        overlaps = True
+                        break
+                
+                if not overlaps:
+                    all_segments.append((q_start, q_end, r_start, r_end))
+    
+    # Ensure segments are sorted by query position
+    all_segments.sort(key=lambda x: x[0])
+    
+    # Resolve any remaining overlaps by prioritizing longer segments
+    final_segments = []
+    if all_segments:
+        current = all_segments[0]
+        for next_seg in all_segments[1:]:
+            q_curr_start, q_curr_end, r_curr_start, r_curr_end = current
+            q_next_start, q_next_end, r_next_start, r_next_end = next_seg
+            
+            # If there's no overlap, add current segment
+            if q_next_start > q_curr_end:
+                final_segments.append(current)
+                current = next_seg
+            else:
+                # If there is overlap, keep the longer segment
+                curr_len = q_curr_end - q_curr_start
+                next_len = q_next_end - q_next_start
+                
+                if next_len > curr_len:
+                    current = next_seg
+    
+        final_segments.append(current)
+    
+    # Try to fill any remaining small gaps
+    final_segments = fill_small_gaps(query, ref, final_segments)
+    
+    return final_segments
+
+def fill_small_gaps(query, ref, segments, max_gap_size=30):
+    """Fill small gaps between segments using local alignment"""
+    if not segments or len(segments) <= 1:
+        return segments
+    
+    filled_segments = [segments[0]]
+    
+    for i in range(1, len(segments)):
+        prev_seg = segments[i-1]
+        curr_seg = segments[i]
+        
+        q_prev_end = prev_seg[1]
+        q_curr_start = curr_seg[0]
+        
+        # Check if there's a small gap between segments
+        q_gap = q_curr_start - q_prev_end - 1
+        
+        if 0 < q_gap <= max_gap_size:
+            # Extract the gap sequence
+            gap_seq = query[q_prev_end+1:q_curr_start]
+            
+            # Try to find a match for this small gap in reference
+            r_prev_end = prev_seg[3]
+            r_curr_start = curr_seg[2]
+            
+            # Check if the gap in reference is reasonable
+            r_gap = r_curr_start - r_prev_end - 1
+            
+            # If the gap in reference is close to the gap in query
+            if abs(r_gap - q_gap) <= max(5, min(r_gap, q_gap) * 0.5):
+                # The gaps are roughly consistent, we can merge
+                filled_segments[-1] = (prev_seg[0], curr_seg[1], prev_seg[2], curr_seg[3])
+            else:
+                # Try to find the best match for the gap sequence
+                best_match = None
+                best_score = -1
+                
+                # Only search in a reasonable window around the expected position
+                search_window = 100
+                search_start = max(0, r_prev_end - search_window)
+                search_end = min(len(ref), r_curr_start + search_window)
+                
+                # Basic heuristic matching for the gap
+                # For small gaps, just check if there's a reasonable match near the expected position
+                if len(gap_seq) <= 15:
+                    for pos in range(search_start, search_end - len(gap_seq) + 1):
+                        ref_subseq = ref[pos:pos+len(gap_seq)]
+                        matches = sum(1 for i in range(len(gap_seq)) if gap_seq[i] == ref_subseq[i])
+                        score = matches / len(gap_seq)
+                        
+                        if score > 0.7 and score > best_score:  # At least 70% match
+                            best_score = score
+                            best_match = (q_prev_end+1, q_curr_start-1, pos, pos+len(gap_seq)-1)
+                
+                # Add the filled segment if we found a good match
+                if best_match:
+                    filled_segments.append((best_match[0], best_match[1], best_match[2], best_match[3]))
+                
+                filled_segments.append(curr_seg)
+        else:
+            filled_segments.append(curr_seg)
+    
+    return filled_segments
+
 def find_alignment(query, ref, min_match_length=30):
     """Find optimal alignment between query and reference handling complex structural variations"""
     # Strategy: Try different k-mer sizes to balance sensitivity and specificity
     seq_length = min(len(query), len(ref))
     
     if seq_length < 3000:
-        k_values = [8, 9, 10]
-        max_errors = 3
+        k_values = [6, 7, 8]
+        max_errors = 3 
     else:
-        k_values = [10, 11, 12]
+        k_values = [8, 9, 10]
         max_errors = 5
     
     # Collect anchors from different k-mer sizes
@@ -406,7 +566,7 @@ def find_alignment(query, ref, min_match_length=30):
         print(f"Finding anchors with k={k}...")
         
         # Adjust stride based on k-mer size
-        stride = k - 5 if k > 7 else 1
+        stride = max(1, k - 5)
         
         # Find forward and reverse anchors
         f_anchors = find_anchors(query, ref, k, min_match_length, stride, max_errors)
@@ -451,7 +611,7 @@ def find_alignment(query, ref, min_match_length=30):
         combined_segments.extend(reverse_segments)
     
     # Sort by query position and resolve overlaps
-    final_segments = []
+    initial_segments = []
     if combined_segments:
         # Sort by query start position
         combined_segments.sort(key=lambda x: x[0])
@@ -472,13 +632,16 @@ def find_alignment(query, ref, min_match_length=30):
                     current = next_seg
                 # Otherwise keep current
             else:
-                final_segments.append(current)
+                initial_segments.append(current)
                 current = next_seg
         
-        final_segments.append(current)
+        initial_segments.append(current)
+    
+    # Try to extend coverage for uncovered regions
+    extended_segments = extend_coverage(query, ref, initial_segments)
     
     # Merge adjacent segments
-    merged_segments = merge_adjacent_segments(final_segments)
+    merged_segments = merge_adjacent_segments(extended_segments, max_gap=30)
     
     # Convert to output format: (q_start, q_end-1, r_start, r_end-1)
     # The -1 adjustment is because our internal representation is inclusive at both ends
@@ -488,6 +651,12 @@ def find_alignment(query, ref, min_match_length=30):
         q_end = min(q_end, len(query))
         r_end = min(r_end, len(ref))
         output_segments.append((q_start, q_end-1, r_start, r_end-1))
+    
+    # Check final coverage
+    final_uncovered = find_uncovered_regions(query, output_segments)
+    total_uncovered = sum(u[1]-u[0]+1 for u in final_uncovered)
+    coverage_percentage = 100 * (len(query) - total_uncovered) / len(query)
+    print(f"Final coverage: {coverage_percentage:.2f}% of query ({len(output_segments)} segments)")
     
     return output_segments
 
