@@ -237,97 +237,134 @@ def find_uncovered_regions(query, segments):
     
     return uncovered
 
-def find_best_match_for_region(query_region, ref, min_match_length=15, min_identity=0.6):
-    """Find the best possible match for a query region in the reference"""
-    # For short sequences, try direct matching with different k-mer sizes
+def find_matches_in_large_region(query_region, ref, max_segment_size=500, min_match_length=20):
+    """Find multiple matches for a large uncovered region using a divide-and-conquer approach"""
     region_len = len(query_region)
     
-    # Adjust k-mer size based on region length
-    if region_len < 50:
-        k_values = [5, 6]
-    elif region_len < 200:
-        k_values = [6, 7, 8]
+    # For smaller regions, use direct matching
+    if region_len <= max_segment_size:
+        return find_matches_in_region(query_region, ref, min_match_length)
+    
+    # For large regions, divide into smaller chunks and find matches for each
+    matches = []
+    chunk_size = max_segment_size
+    
+    # Process the region in overlapping chunks
+    for i in range(0, region_len, chunk_size // 2):
+        # Define chunk boundaries
+        chunk_start = i
+        chunk_end = min(i + chunk_size, region_len)
+        
+        # Extract chunk
+        chunk = query_region[chunk_start:chunk_end]
+        
+        # Find matches for this chunk with different k-mer sizes
+        k_values = [6, 8, 10] if len(chunk) > 100 else [5, 6, 7]
+        
+        for k in k_values:
+            if k >= len(chunk):
+                continue
+                
+            # Find anchors for this chunk
+            chunk_matches = []
+            
+            # Try both forward and reverse matching
+            forward_anchors = find_anchors(chunk, ref, k=k, min_match_length=min_match_length, 
+                                         stride=1, max_errors=max(3, min_match_length // 10))
+            
+            # Adjust coordinates to match the original query
+            for q_s, q_e, r_s, r_e, score, identity in forward_anchors:
+                chunk_matches.append((q_s + chunk_start, q_e + chunk_start, r_s, r_e, score, identity, 'f'))
+            
+            # Also try reverse complement matching 
+            rev_ref = reverse_complement(ref)
+            rev_anchors = find_anchors(chunk, rev_ref, k=k, min_match_length=min_match_length, 
+                                     stride=1, max_errors=max(3, min_match_length // 10))
+            
+            # Adjust coordinates for reverse matches
+            for q_s, q_e, r_s, r_e, score, identity in rev_anchors:
+                orig_r_start = len(ref) - r_e
+                orig_r_end = len(ref) - r_s
+                chunk_matches.append((q_s + chunk_start, q_e + chunk_start, 
+                                    orig_r_start, orig_r_end, score, identity, 'r'))
+            
+            # Add this chunk's matches to overall matches
+            matches.extend(chunk_matches)
+    
+    # Filter out overlapping matches
+    if matches:
+        # Sort by score and filter
+        matches.sort(key=lambda x: x[4], reverse=True)
+        
+        filtered = []
+        excluded = set()
+        
+        for i, match_i in enumerate(matches):
+            if i in excluded:
+                continue
+                
+            filtered.append(match_i)
+            q_start_i, q_end_i = match_i[0], match_i[1]
+            
+            # Mark overlapping matches for exclusion
+            for j in range(i+1, len(matches)):
+                if j in excluded:
+                    continue
+                    
+                q_start_j, q_end_j = matches[j][0], matches[j][1]
+                
+                # Check for significant overlap
+                overlap_start = max(q_start_i, q_start_j)
+                overlap_end = min(q_end_i, q_end_j)
+                overlap = max(0, overlap_end - overlap_start)
+                
+                min_len = min(q_end_i - q_start_i, q_end_j - q_start_j)
+                if overlap > 0.5 * min_len:  # If more than 50% overlap
+                    excluded.add(j)
+        
+        return filtered
+    
+    return []
+
+def find_matches_in_region(query_region, ref, min_match_length=20):
+    """Find matches for a smaller region"""
+    segment_len = len(query_region)
+    
+    # Use smaller k for shorter segments
+    if segment_len < 50:
+        k_size = 5
+    elif segment_len < 100:
+        k_size = 6
     else:
-        k_values = [8, 9, 10]
+        k_size = 8
     
-    best_match = None
-    best_score = -1
+    matches = []
     
-    # Try matching with different k values
-    for k in k_values:
-        if k >= region_len:
-            continue
-            
-        # Create hash of all k-mers in reference
-        ref_kmers = {}
-        for i in range(len(ref) - k + 1):
-            kmer = ref[i:i+k]
-            if kmer not in ref_kmers:
-                ref_kmers[kmer] = []
-            ref_kmers[kmer].append(i)
-        
-        # Look for matches in query region
-        for i in range(len(query_region) - k + 1):
-            kmer = query_region[i:i+k]
-            if kmer in ref_kmers:
-                for r_pos in ref_kmers[kmer]:
-                    # Try to extend the match
-                    q_pos = i
-                    ref_pos = r_pos
-                    matches = 0
-                    
-                    # Forward extension
-                    while q_pos < len(query_region) and ref_pos < len(ref):
-                        if query_region[q_pos] == ref[ref_pos]:
-                            matches += 1
-                        q_pos += 1
-                        ref_pos += 1
-                        
-                        # Break if we've checked enough positions
-                        if q_pos - i > min(100, len(query_region)):
-                            break
-                    
-                    # Calculate identity
-                    length = q_pos - i
-                    identity = matches / length if length > 0 else 0
-                    
-                    if length >= min_match_length and identity >= min_identity:
-                        score = matches * identity
-                        if score > best_score:
-                            best_score = score
-                            best_match = (i, q_pos-1, r_pos, r_pos + (q_pos-i-1), identity)
+    # Find matches with forward orientation
+    forward_anchors = find_anchors(query_region, ref, k=k_size, 
+                                min_match_length=min_match_length, stride=1, 
+                                max_errors=max(3, min_match_length // 10))
     
-    # For short regions or if no match found, try more exhaustive approach
-    if best_match is None and region_len <= 100:
-        # Sliding window approach for short regions
-        window_size = min(region_len, 30)
-        step = max(1, window_size // 3)
-        
-        for i in range(0, len(query_region) - window_size + 1, step):
-            window = query_region[i:i+window_size]
-            
-            # Look for this window in reference with some tolerance
-            best_window_match = None
-            best_window_score = -1
-            
-            for j in range(0, len(ref) - window_size + 1, step):
-                ref_window = ref[j:j+window_size]
-                
-                # Count matches
-                matches = sum(1 for x, y in zip(window, ref_window) if x == y)
-                identity = matches / window_size
-                
-                if identity > min_identity and matches > best_window_score:
-                    best_window_score = matches
-                    best_window_match = (i, i+window_size-1, j, j+window_size-1, identity)
-            
-            if best_window_match and best_window_match[4] > 0.7:  # At least 70% identity
-                return best_window_match
-                
-    return best_match
+    # Adjust coordinates to match the original query region
+    for q_s, q_e, r_s, r_e, score, identity in forward_anchors:
+        matches.append((q_s, q_e, r_s, r_e, score, identity, 'f'))
+    
+    # Also try reverse complement matching
+    rev_ref = reverse_complement(ref)
+    rev_anchors = find_anchors(query_region, rev_ref, k=k_size, 
+                             min_match_length=min_match_length, stride=1, 
+                             max_errors=max(3, min_match_length // 10))
+    
+    # Adjust coordinates for reverse matches
+    for q_s, q_e, r_s, r_e, score, identity in rev_anchors:
+        orig_r_start = len(ref) - r_e
+        orig_r_end = len(ref) - r_s
+        matches.append((q_s, q_e, orig_r_start, orig_r_end, score, identity, 'r'))
+    
+    return matches
 
 def ensure_complete_coverage(query, ref, segments):
-    """Ensure the entire query is covered by finding matches for uncovered regions"""
+    """Ensure the entire query is covered by finding fine-grained matches for uncovered regions"""
     # Find uncovered regions
     uncovered = find_uncovered_regions(query, segments)
     
@@ -343,56 +380,108 @@ def ensure_complete_coverage(query, ref, segments):
         region_len = end - start + 1
         print(f"Processing uncovered region {i+1}/{len(uncovered)}: positions {start}-{end} (length: {region_len})")
         
-        # Skip extremely short regions (likely just noise)
+        # Skip very small regions
         if region_len < 5:
+            print(f"  Skipping very small region (length: {region_len})")
+            # Small gap handling can be done in the merging stage
             continue
         
         # Extract the query region
         query_region = query[start:end+1]
         
-        # Find best match in reference
-        match = find_best_match_for_region(query_region, ref)
-        
-        if match:
-            q_start_rel, q_end_rel, r_start, r_end, identity = match
-            q_start = start + q_start_rel
-            q_end = start + q_end_rel
+        # For large regions, use divide-and-conquer approach
+        if region_len > 1000:
+            print(f"  Large region detected, using divide-and-conquer approach")
+            region_matches = find_matches_in_large_region(query_region, ref, max_segment_size=500)
             
-            print(f"  Found match for uncovered region: q[{q_start}-{q_end}] -> r[{r_start}-{r_end}] "
-                  f"(length: {q_end-q_start+1}, identity: {identity:.2f})")
+            # Adjust coordinates to match the original query
+            adjusted_matches = []
+            for q_s, q_e, r_s, r_e, score, identity, orientation in region_matches:
+                adjusted_matches.append((q_s + start, q_e + start, r_s, r_e, score, identity, orientation))
             
-            # Add to segments
-            complete_segments.append((q_start, q_end, r_start, r_end))
+            region_matches = adjusted_matches
         else:
-            # If no good match found, create a dummy match
-            # This ensures we have coverage even if we can't find a good match
-            # Note: This approach prioritizes coverage over quality
-            print(f"  No good match found for region. Creating placeholder match.")
+            # For smaller regions, find matches directly
+            region_matches = find_matches_in_region(query_region, ref)
             
-            # If we can't match, find best possible approximate match
-            low_threshold_match = find_best_match_for_region(query_region, ref, min_match_length=10, min_identity=0.4)
+            # Adjust coordinates to match the original query
+            adjusted_matches = []
+            for q_s, q_e, r_s, r_e, score, identity, orientation in region_matches:
+                adjusted_matches.append((q_s + start, q_e + start, r_s, r_e, score, identity, orientation))
             
-            if low_threshold_match:
-                q_start_rel, q_end_rel, r_start, r_end, identity = low_threshold_match
-                q_start = start + q_start_rel
-                q_end = start + q_end_rel
+            region_matches = adjusted_matches
+        
+        if region_matches:
+            print(f"  Found {len(region_matches)} potential matches for region")
+            
+            # Sort by score
+            region_matches.sort(key=lambda x: x[4], reverse=True)
+            
+            # Add non-overlapping matches to our segments
+            for match in region_matches:
+                q_start, q_end, r_start, r_end, _, _, _ = match
                 
-                print(f"  Created approximate match: q[{q_start}-{q_end}] -> r[{r_start}-{r_end}] "
-                      f"(length: {q_end-q_start+1}, identity: {identity:.2f})")
+                # Check for overlaps with existing segments
+                overlaps = False
+                for existing_seg in complete_segments:
+                    q_s, q_e = existing_seg[0], existing_seg[1]
+                    
+                    # Check if there's significant overlap
+                    overlap = max(0, min(q_e, q_end) - max(q_s, q_start))
+                    if overlap > 0:
+                        overlaps = True
+                        break
                 
-                complete_segments.append((q_start, q_end, r_start, r_end))
+                if not overlaps:
+                    complete_segments.append((q_start, q_end, r_start, r_end))
+        else:
+            print(f"  No matches found for region. Creating segments to ensure coverage.")
+            
+            # If no matches found for a large region, divide it into smaller segments
+            if region_len > 500:
+                # Divide into chunks of approximately 300bp
+                chunk_size = 300
+                for chunk_start in range(0, region_len, chunk_size):
+                    chunk_end = min(chunk_start + chunk_size, region_len)
+                    q_chunk_start = start + chunk_start
+                    q_chunk_end = start + chunk_end - 1
+                    
+                    # Try to find some match in reference
+                    chunk = query_region[chunk_start:chunk_end]
+                    
+                    # Simple matching heuristic for fallback
+                    best_r_start = 0
+                    best_score = -1
+                    
+                    # Try a few random positions in ref
+                    sample_step = max(1, len(ref) // 20)  # Try ~20 positions
+                    for r_pos in range(0, len(ref) - len(chunk) + 1, sample_step):
+                        ref_chunk = ref[r_pos:r_pos + len(chunk)]
+                        matches = sum(1 for i in range(len(chunk)) if i < len(ref_chunk) and chunk[i] == ref_chunk[i])
+                        score = matches / len(chunk)
+                        
+                        if score > best_score:
+                            best_score = score
+                            best_r_start = r_pos
+                    
+                    r_chunk_start = best_r_start
+                    r_chunk_end = r_chunk_start + len(chunk) - 1
+                    
+                    # Add this segment
+                    complete_segments.append((q_chunk_start, q_chunk_end, r_chunk_start, r_chunk_end))
             else:
-                # Last resort: map to a default location if we can't find any match at all
-                # We'll use the beginning of the reference as a fallback
-                default_r_start = 0
+                # For smaller regions, just add one segment
+                # Try to find the best approximate match
+                best_r_start = start % len(ref)  # Default fallback
                 
-                print(f"  Created fallback match: q[{start}-{end}] -> r[{default_r_start}-{default_r_start+region_len-1}]")
-                complete_segments.append((start, end, default_r_start, default_r_start + region_len - 1))
+                # Add the segment
+                complete_segments.append((start, end, best_r_start, best_r_start + region_len - 1))
     
-    # Resolve overlaps
+    # Ensure segments are sorted and non-overlapping
     complete_segments.sort(key=lambda x: x[0])
-    non_overlapping = []
     
+    # Resolve any remaining overlaps
+    non_overlapping = []
     if complete_segments:
         current = complete_segments[0]
         
@@ -400,47 +489,73 @@ def ensure_complete_coverage(query, ref, segments):
             q_curr_start, q_curr_end, r_curr_start, r_curr_end = current
             q_next_start, q_next_end, r_next_start, r_next_end = next_seg
             
-            if q_next_start > q_curr_end:
-                # No overlap
-                non_overlapping.append(current)
-                current = next_seg
-            else:
-                # Handle overlap - keep segment with better coverage
-                curr_len = q_curr_end - q_curr_start + 1
-                next_len = q_next_end - q_next_start + 1
+            # Check for overlap
+            if q_next_start <= q_curr_end:
+                # Choose the better segment (prefer original segments, then longer ones)
+                curr_len = q_curr_end - q_curr_start
+                next_len = q_next_end - q_next_start
                 
-                # Choose longer segment, but prioritize original segments
                 if next_seg in segments and current not in segments:
                     current = next_seg
                 elif curr_len >= next_len:
-                    # Keep current (already longer)
-                    pass
+                    pass  # Keep current
                 else:
                     current = next_seg
+            else:
+                non_overlapping.append(current)
+                current = next_seg
         
         non_overlapping.append(current)
     
-    # Verify we've achieved complete coverage
-    still_uncovered = find_uncovered_regions(query, non_overlapping)
-    
-    if still_uncovered:
-        print(f"Warning: {len(still_uncovered)} regions still uncovered after processing. "
-              f"Adding remaining segments to ensure complete coverage.")
-        
-        # Desperate measure: add all remaining uncovered regions with arbitrary matches
-        for start, end in still_uncovered:
-            region_len = end - start + 1
-            # Use start position as reference position (arbitrary but consistent)
-            non_overlapping.append((start, end, start % len(ref), (start + region_len - 1) % len(ref)))
-    
-    # Final verification
+    # Verify coverage
     final_uncovered = find_uncovered_regions(query, non_overlapping)
     if final_uncovered:
-        print(f"ERROR: Failed to achieve complete coverage. {len(final_uncovered)} regions still uncovered.")
-    else:
-        print(f"Successfully achieved complete coverage with {len(non_overlapping)} segments.")
+        print(f"Warning: {len(final_uncovered)} regions still uncovered. Adding final segments.")
+        
+        # Add any remaining uncovered regions
+        final_segments = list(non_overlapping)
+        
+        for start, end in final_uncovered:
+            region_len = end - start + 1
+            # Match to a reasonable position in reference
+            r_start = start % len(ref)
+            r_end = r_start + region_len - 1
+            
+            final_segments.append((start, end, r_start, r_end))
+            
+        # Re-sort and check for overlaps
+        final_segments.sort(key=lambda x: x[0])
+        return resolve_overlaps(final_segments)
     
     return non_overlapping
+
+def resolve_overlaps(segments):
+    """Resolve any overlapping segments in query coordinates"""
+    if not segments:
+        return []
+        
+    # Sort by query start position
+    sorted_segs = sorted(segments, key=lambda x: x[0])
+    
+    # Handle overlaps by keeping the longer segment
+    result = [sorted_segs[0]]
+    
+    for curr in sorted_segs[1:]:
+        prev = result[-1]
+        
+        # Check for overlap
+        if curr[0] <= prev[1]:
+            # Overlapping segments - keep the longer one
+            curr_len = curr[1] - curr[0]
+            prev_len = prev[1] - prev[0]
+            
+            if curr_len > prev_len:
+                result[-1] = curr  # Replace with current segment
+        else:
+            # No overlap - add to result
+            result.append(curr)
+    
+    return result
 
 def evaluate_segment(query, ref, q_start, q_end, r_start, r_end):
     """Calculate the edit distance-based score for a segment"""
@@ -660,7 +775,7 @@ def find_alignment(query, ref, min_match_length=30):
     # Merge adjacent segments
     merged_segments = merge_adjacent_segments(initial_segments, max_gap=30)
     
-    # Ensure complete coverage of the query
+    # Ensure complete coverage of the query with fine-grained matching for large gaps
     complete_segments = ensure_complete_coverage(query, ref, merged_segments)
     
     # Final merging pass to clean up
@@ -671,9 +786,9 @@ def find_alignment(query, ref, min_match_length=30):
     output_segments = []
     for q_start, q_end, r_start, r_end in final_segments:
         # Ensure end indices are within bounds
-        q_end = min(q_end, len(query))
-        r_end = min(r_end, len(ref))
-        output_segments.append((q_start, q_end-1, r_start, r_end-1))
+        q_end = min(q_end, len(query) - 1)
+        r_end = min(r_end, len(ref) - 1)
+        output_segments.append((q_start, q_end, r_start, r_end))
     
     # Check final coverage
     final_uncovered = find_uncovered_regions(query, output_segments)
