@@ -1,6 +1,5 @@
 # Core parameters
 KMER_SIZE = 15
-SHIFT = 5
 MIN_SEGMENT_LENGTH = 30  # Required by scoring function
 MAX_EDIT_RATE = 0.1      # Required by scoring function
 
@@ -14,11 +13,11 @@ SPARSE_SHIFT = 3         # Sparse sampling for speed
 SHORT_SEQUENCE_THRESHOLD = 3000
 
 # T2 parameters (short sequences) - current best performing values
-T2_KMER_SIZES = [6, 8, 10, 12, 15]  # K-mer sizes for short sequences
-T2_EXTENSION_LIMIT_SHORT = 80  # Extension limit for short sequences
-T2_EXTENSION_LIMIT_RC = 80  # Extension limit for reverse complement
-T2_MISMATCH_THRESHOLD_EARLY = 10  # Early mismatch threshold
-T2_MISMATCH_RATE = 0.07  # Mismatch rate threshold
+T2_KMER_SIZES = [6, 7, 8, 9, 11, 13, 15]  # K-mer sizes for short sequences
+T2_EXTENSION_LIMIT_SHORT = 74  # Extension limit for short sequences
+T2_EXTENSION_LIMIT_RC = 75  # Extension limit for reverse complement
+T2_MISMATCH_THRESHOLD_EARLY = 11  # Early mismatch threshold
+T2_MISMATCH_RATE = 0.08  # Mismatch rate threshold
 T2_GAP_FILL_START_MAX = 60  # Maximum gap size for start extension
 T2_GAP_FILL_BETWEEN_MAX = 40  # Maximum gap size for between-segment filling
 T2_GAP_FILL_END_MAX = 60  # Maximum gap size for end extension
