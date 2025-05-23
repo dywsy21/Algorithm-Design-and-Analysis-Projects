@@ -12,7 +12,7 @@ def find_alignment_short_sequence(query, ref):
     """Specialized strategy for short sequences (t2) - restore 1869 score"""
     # Use proven k-mer sizes that worked before
     all_anchors = []
-    for kmer_size in [6, 8, 10, 12, 15]:
+    for kmer_size in config.T2_KMER_SIZES:
         anchors = seq2hashtable_multi_test(ref, query, kmer_size, 1)
         all_anchors.extend(anchors)
     
@@ -62,13 +62,13 @@ def extend_anchor_conservative_short(query, ref, qpos, rpos, strand, initial_len
         # Very conservative extension for short sequences
         left_ext = 0
         mismatches = 0
-        while (qpos - left_ext > 0 and rpos - left_ext > 0 and left_ext < 80):
+        while (qpos - left_ext > 0 and rpos - left_ext > 0 and left_ext < config.T2_EXTENSION_LIMIT_SHORT):
             if query[qpos - left_ext - 1] == ref[rpos - left_ext - 1]:
                 left_ext += 1
             else:
                 mismatches += 1
                 # Strict mismatch control
-                if left_ext > 10 and mismatches / left_ext > 0.07:
+                if left_ext > config.T2_MISMATCH_THRESHOLD_EARLY and mismatches / left_ext > config.T2_MISMATCH_RATE:
                     break
                 left_ext += 1
         
@@ -76,12 +76,12 @@ def extend_anchor_conservative_short(query, ref, qpos, rpos, strand, initial_len
         mismatches = 0
         while (qpos + initial_len + right_ext < qlen and 
                rpos + initial_len + right_ext < rlen and 
-               right_ext < 80):
+               right_ext < config.T2_EXTENSION_LIMIT_SHORT):
             if query[qpos + initial_len + right_ext] == ref[rpos + initial_len + right_ext]:
                 right_ext += 1
             else:
                 mismatches += 1
-                if right_ext > 10 and mismatches / right_ext > 0.07:
+                if right_ext > config.T2_MISMATCH_THRESHOLD_EARLY and mismatches / right_ext > config.T2_MISMATCH_RATE:
                     break
                 right_ext += 1
         
@@ -91,13 +91,13 @@ def extend_anchor_conservative_short(query, ref, qpos, rpos, strand, initial_len
     else:  # Reverse complement - exact matching only
         left_ext = 0
         while (qpos - left_ext > 0 and rpos + initial_len + left_ext < rlen and
-               left_ext < 80 and
+               left_ext < config.T2_EXTENSION_LIMIT_RC and
                query[qpos - left_ext - 1] == rc_map.get(ref[rpos + initial_len + left_ext], 'N')):
             left_ext += 1
         
         right_ext = 0
         while (qpos + initial_len + right_ext < qlen and rpos - right_ext > 0 and
-               right_ext < 80 and
+               right_ext < config.T2_EXTENSION_LIMIT_RC and
                query[qpos + initial_len + right_ext] == rc_map.get(ref[rpos - right_ext - 1], 'N')):
             right_ext += 1
         
@@ -112,12 +112,12 @@ def extend_anchor_conservative_long(query, ref, qpos, rpos, strand, initial_len)
     if strand == 1:  # Forward strand
         left_ext = 0
         mismatches = 0
-        while (qpos - left_ext > 0 and rpos - left_ext > 0 and left_ext < 200):
+        while (qpos - left_ext > 0 and rpos - left_ext > 0 and left_ext < config.T1_EXTENSION_LIMIT_LONG):
             if query[qpos - left_ext - 1] == ref[rpos - left_ext - 1]:
                 left_ext += 1
             else:
                 mismatches += 1
-                if left_ext > 15 and mismatches / left_ext > 0.05:
+                if left_ext > config.T1_MISMATCH_THRESHOLD_EARLY and mismatches / left_ext > config.T1_MISMATCH_RATE:
                     break
                 left_ext += 1
         
@@ -125,12 +125,12 @@ def extend_anchor_conservative_long(query, ref, qpos, rpos, strand, initial_len)
         mismatches = 0
         while (qpos + initial_len + right_ext < qlen and 
                rpos + initial_len + right_ext < rlen and 
-               right_ext < 200):
+               right_ext < config.T1_EXTENSION_LIMIT_LONG):
             if query[qpos + initial_len + right_ext] == ref[rpos + initial_len + right_ext]:
                 right_ext += 1
             else:
                 mismatches += 1
-                if right_ext > 15 and mismatches / right_ext > 0.05:
+                if right_ext > config.T1_MISMATCH_THRESHOLD_EARLY and mismatches / right_ext > config.T1_MISMATCH_RATE:
                     break
                 right_ext += 1
         
@@ -140,13 +140,13 @@ def extend_anchor_conservative_long(query, ref, qpos, rpos, strand, initial_len)
     else:  # Reverse complement
         left_ext = 0
         while (qpos - left_ext > 0 and rpos + initial_len + left_ext < rlen and
-               left_ext < 200 and
+               left_ext < config.T1_EXTENSION_LIMIT_RC and
                query[qpos - left_ext - 1] == rc_map.get(ref[rpos + initial_len + left_ext], 'N')):
             left_ext += 1
         
         right_ext = 0
         while (qpos + initial_len + right_ext < qlen and rpos - right_ext > 0 and
-               right_ext < 200 and
+               right_ext < config.T1_EXTENSION_LIMIT_RC and
                query[qpos + initial_len + right_ext] == rc_map.get(ref[rpos - right_ext - 1], 'N')):
             right_ext += 1
         
@@ -207,7 +207,7 @@ def conservative_gap_fill_short(segments, query, ref):
         # Try to extend first segment to start (very small gaps only)
         if i == 0 and qstart > 0:
             gap_size = qstart
-            if gap_size <= 60 and rstart >= gap_size:
+            if gap_size <= config.T2_GAP_FILL_START_MAX and rstart >= gap_size:
                 # Check for exact match
                 can_extend = all(query[j] == ref[rstart - gap_size + j] 
                                for j in range(gap_size))
@@ -221,7 +221,7 @@ def conservative_gap_fill_short(segments, query, ref):
             prev_qend = filled[-1][1]
             gap_size = qstart - prev_qend
             
-            if 0 < gap_size <= 40:  # Very small gaps
+            if 0 < gap_size <= config.T2_GAP_FILL_BETWEEN_MAX:  # Very small gaps
                 prev_segment = filled[-1]
                 can_extend = all(
                     prev_qend + j < len(query) and 
@@ -242,7 +242,7 @@ def conservative_gap_fill_short(segments, query, ref):
     if filled and filled[-1][1] < qlen:
         last_segment = filled[-1]
         gap_size = qlen - last_segment[1]
-        if gap_size <= 60 and last_segment[3] + gap_size <= len(ref):
+        if gap_size <= config.T2_GAP_FILL_END_MAX and last_segment[3] + gap_size <= len(ref):
             can_extend = all(query[last_segment[1] + j] == ref[last_segment[3] + j]
                            for j in range(gap_size))
             if can_extend:
@@ -265,7 +265,7 @@ def conservative_gap_fill_long(segments, query, ref):
         
         if i == 0 and qstart > 0:
             gap_size = qstart
-            if gap_size <= 50 and rstart >= gap_size:
+            if gap_size <= config.T1_GAP_FILL_START_MAX and rstart >= gap_size:
                 can_extend = all(query[j] == ref[rstart - gap_size + j] 
                                for j in range(gap_size))
                 if can_extend:
@@ -275,7 +275,7 @@ def conservative_gap_fill_long(segments, query, ref):
             prev_qend = filled[-1][1]
             gap_size = qstart - prev_qend
             
-            if 0 < gap_size <= 30:
+            if 0 < gap_size <= config.T1_GAP_FILL_BETWEEN_MAX:
                 prev_segment = filled[-1]
                 can_extend = all(
                     prev_qend + j < len(query) and 
@@ -294,7 +294,7 @@ def conservative_gap_fill_long(segments, query, ref):
     if filled and filled[-1][1] < qlen:
         last_segment = filled[-1]
         gap_size = qlen - last_segment[1]
-        if gap_size <= 50 and last_segment[3] + gap_size <= len(ref):
+        if gap_size <= config.T1_GAP_FILL_END_MAX and last_segment[3] + gap_size <= len(ref):
             can_extend = all(query[last_segment[1] + j] == ref[last_segment[3] + j]
                            for j in range(gap_size))
             if can_extend:

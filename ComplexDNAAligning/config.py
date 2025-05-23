@@ -12,3 +12,22 @@ SPARSE_SHIFT = 3         # Sparse sampling for speed
 
 # Sequence length threshold for strategy selection
 SHORT_SEQUENCE_THRESHOLD = 3000
+
+# T2 parameters (short sequences) - current best performing values
+T2_KMER_SIZES = [6, 8, 10, 12, 15]  # K-mer sizes for short sequences
+T2_EXTENSION_LIMIT_SHORT = 80  # Extension limit for short sequences
+T2_EXTENSION_LIMIT_RC = 80  # Extension limit for reverse complement
+T2_MISMATCH_THRESHOLD_EARLY = 10  # Early mismatch threshold
+T2_MISMATCH_RATE = 0.07  # Mismatch rate threshold
+T2_GAP_FILL_START_MAX = 60  # Maximum gap size for start extension
+T2_GAP_FILL_BETWEEN_MAX = 40  # Maximum gap size for between-segment filling
+T2_GAP_FILL_END_MAX = 60  # Maximum gap size for end extension
+
+# T1 parameters (long sequences) - current best performing values
+T1_EXTENSION_LIMIT_LONG = 200  # Extension limit for long sequences
+T1_EXTENSION_LIMIT_RC = 200  # Extension limit for reverse complement
+T1_MISMATCH_THRESHOLD_EARLY = 15  # Early mismatch threshold
+T1_MISMATCH_RATE = 0.05  # Mismatch rate threshold
+T1_GAP_FILL_START_MAX = 50  # Maximum gap size for start extension
+T1_GAP_FILL_BETWEEN_MAX = 30  # Maximum gap size for between-segment filling
+T1_GAP_FILL_END_MAX = 50  # Maximum gap size for end extension
