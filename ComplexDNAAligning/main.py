@@ -1,194 +1,191 @@
-from evaluate import calculate_value, seq2hashtable_multi_test
-import numpy as np
+from evaluate import calculate_value, seq2hashtable_multi_test, calculate_distance
 import config
 
 def find_alignment_tuples(query, ref):
-    # Step 1: Generate anchors with multiple k-mer sizes for better coverage
+    # Generate anchors with multiple k-mer sizes for better coverage
     all_anchors = []
-    for kmer_size in [config.KMER_SIZE, config.KMER_SIZE + 3]:
-        anchors = seq2hashtable_multi_test(ref, query, kmer_size, config.SHIFT)
-        if len(anchors) > 0:
-            all_anchors.extend(anchors)
+    for kmer_size in [12, 15, 18]:  # Multiple k-mer sizes
+        anchors = seq2hashtable_multi_test(ref, query, kmer_size, 1)  # Use shift=1 for maximum coverage
+        all_anchors.extend(anchors)
     
     if len(all_anchors) == 0:
         return []
     
-    # Step 2: Extend anchors with mismatch tolerance
-    extended_anchors = []
-    for anchor in all_anchors:
-        query_pos, ref_pos, strand, match_len = anchor
-        extended_match = extend_match_with_mismatches(query, ref, query_pos, ref_pos, strand, match_len)
-        if extended_match and extended_match[1] - extended_match[0] >= config.MIN_ANCHOR_LENGTH:
-            extended_anchors.append(extended_match)
+    # Extend anchors conservatively to ensure validation passes
+    segments = []
+    for query_pos, ref_pos, strand, match_len in all_anchors:
+        segment = extend_anchor_conservatively(query, ref, query_pos, ref_pos, strand, match_len)
+        if segment and segment[1] - segment[0] >= config.MIN_SEGMENT_LENGTH:
+            segments.append(segment)
     
-    if not extended_anchors:
-        return []
-    
-    # Step 3: Remove redundant/overlapping anchors
-    filtered_anchors = filter_overlapping_anchors(extended_anchors)
-    
-    # Step 4: Find optimal chain with gap penalties
-    chain = find_optimal_chain_improved(filtered_anchors, query, ref)
-    
-    # Step 5: Fill gaps between anchors
-    if config.FILL_SMALL_GAPS:
-        chain = fill_gaps_between_anchors(chain, query, ref)
-    
-    return chain
+    # Remove overlaps and select best coverage - FIXED
+    return select_non_overlapping_segments(segments, query, ref)
 
-def extend_match_with_mismatches(query, ref, query_pos, ref_pos, strand, initial_len):
-    """Extend match allowing some mismatches"""
-    query_len, ref_len = len(query), len(ref)
+def extend_anchor_conservatively(query, ref, qpos, rpos, strand, initial_len):
+    """Conservatively extend anchor ensuring segments will pass validation"""
+    qlen, rlen = len(query), len(ref)
     rc_map = {'A': 'T', 'T': 'A', 'G': 'C', 'C': 'G'}
     
-    if strand == 1:  # Forward
-        # Extend left
+    if strand == 1:  # Forward strand
+        # Extend left with exact matching only
         left_ext = 0
-        mismatches = 0
-        while (query_pos - left_ext > 0 and ref_pos - left_ext > 0):
-            if query[query_pos - left_ext - 1] != ref[ref_pos - left_ext - 1]:
-                mismatches += 1
-                if mismatches / (left_ext + 1) > config.EXTEND_MISMATCH_RATE:
-                    break
+        while (qpos - left_ext > 0 and rpos - left_ext > 0 and 
+               query[qpos - left_ext - 1] == ref[rpos - left_ext - 1]):
             left_ext += 1
-            if left_ext > 100:  # Limit extension
+            if left_ext > 500:  # Reasonable limit
                 break
         
-        # Extend right
+        # Extend right with exact matching only
         right_ext = 0
-        mismatches = 0
-        while (query_pos + initial_len + right_ext < query_len and 
-               ref_pos + initial_len + right_ext < ref_len):
-            if query[query_pos + initial_len + right_ext] != ref[ref_pos + initial_len + right_ext]:
-                mismatches += 1
-                if mismatches / (right_ext + 1) > config.EXTEND_MISMATCH_RATE:
-                    break
+        while (qpos + initial_len + right_ext < qlen and 
+               rpos + initial_len + right_ext < rlen and
+               query[qpos + initial_len + right_ext] == ref[rpos + initial_len + right_ext]):
             right_ext += 1
-            if right_ext > 100:
+            if right_ext > 500:  # Reasonable limit
                 break
         
-        return (query_pos - left_ext, query_pos + initial_len + right_ext,
-                ref_pos - left_ext, ref_pos + initial_len + right_ext)
-    else:  # Reverse complement
-        # Similar logic for reverse complement
+        qstart = qpos - left_ext
+        qend = qpos + initial_len + right_ext
+        rstart = rpos - left_ext
+        rend = rpos + initial_len + right_ext
+        
+        return (qstart, qend, rstart, rend)
+    
+    else:  # Reverse complement strand
+        # Extend left (query left, ref right) with exact matching
         left_ext = 0
-        while (query_pos - left_ext > 0 and ref_pos + initial_len + left_ext < ref_len and
-               query[query_pos - left_ext - 1] == rc_map.get(ref[ref_pos + initial_len + left_ext], 'N')):
+        while (qpos - left_ext > 0 and rpos + initial_len + left_ext < rlen and
+               query[qpos - left_ext - 1] == rc_map.get(ref[rpos + initial_len + left_ext], 'N')):
             left_ext += 1
-            if left_ext > 100:
+            if left_ext > 500:
                 break
         
+        # Extend right (query right, ref left) with exact matching
         right_ext = 0
-        while (query_pos + initial_len + right_ext < query_len and ref_pos - right_ext > 0 and
-               query[query_pos + initial_len + right_ext] == rc_map.get(ref[ref_pos - right_ext - 1], 'N')):
+        while (qpos + initial_len + right_ext < qlen and rpos - right_ext > 0 and
+               query[qpos + initial_len + right_ext] == rc_map.get(ref[rpos - right_ext - 1], 'N')):
             right_ext += 1
-            if right_ext > 100:
+            if right_ext > 500:
                 break
         
-        return (query_pos - left_ext, query_pos + initial_len + right_ext,
-                ref_pos - right_ext, ref_pos + initial_len + left_ext)
+        qstart = qpos - left_ext
+        qend = qpos + initial_len + right_ext
+        rstart = rpos - right_ext
+        rend = rpos + initial_len + left_ext
+        
+        return (qstart, qend, rstart, rend)
 
-def filter_overlapping_anchors(anchors):
-    """Remove overlapping anchors, keeping the longer ones"""
-    anchors = sorted(anchors, key=lambda x: x[1] - x[0], reverse=True)  # Sort by length
-    filtered = []
-    
-    for anchor in anchors:
-        overlap = False
-        for existing in filtered:
-            if (max(anchor[0], existing[0]) < min(anchor[1], existing[1]) and
-                max(anchor[2], existing[2]) < min(anchor[3], existing[3])):
-                overlap = True
-                break
-        if not overlap:
-            filtered.append(anchor)
-    
-    return filtered
-
-def find_optimal_chain_improved(anchors, query, ref):
-    """Improved chaining with better scoring"""
-    if not anchors:
+def select_non_overlapping_segments(segments, query, ref):
+    """Select non-overlapping segments ensuring no query position overlap"""
+    if not segments:
         return []
     
-    anchors = sorted(anchors, key=lambda x: x[0])
-    n = len(anchors)
-    dp = [0] * n
-    prev = [-1] * n
+    # Remove duplicate segments
+    segments = list(set(segments))
     
-    # Initialize with anchor lengths
-    for i in range(n):
-        dp[i] = anchors[i][1] - anchors[i][0]
+    # Filter out invalid segments
+    valid_segments = []
+    for seg in segments:
+        qstart, qend, rstart, rend = seg
+        if (qend - qstart >= config.MIN_SEGMENT_LENGTH and 
+            qend <= len(query) and rend <= len(ref) and
+            qstart >= 0 and rstart >= 0 and qend > qstart and rend > rstart):
+            valid_segments.append(seg)
     
-    # DP with gap penalties
-    for i in range(1, n):
-        for j in range(i):
-            if can_chain_improved(anchors[j], anchors[i]):
-                gap_penalty = calculate_gap_penalty(anchors[j], anchors[i])
-                score = dp[j] + (anchors[i][1] - anchors[i][0]) - gap_penalty
-                if score > dp[i]:
-                    dp[i] = score
-                    prev[i] = j
-    
-    # Find best chain
-    best_score = max(dp)
-    if best_score < config.MIN_CHAIN_SCORE:
+    if not valid_segments:
         return []
     
-    best_end = dp.index(best_score)
+    # Sort by query start position
+    valid_segments.sort(key=lambda x: x[0])
     
-    # Reconstruct chain
-    chain = []
-    current = best_end
-    while current != -1:
-        chain.append(anchors[current])
-        current = prev[current]
+    # Use greedy algorithm to select non-overlapping segments with maximum total length
+    selected = []
+    last_query_end = 0
     
-    chain.reverse()
-    return chain
-
-def can_chain_improved(anchor1, anchor2):
-    """Improved chaining logic"""
-    q1_start, q1_end, r1_start, r1_end = anchor1
-    q2_start, q2_end, r2_start, r2_end = anchor2
-    
-    if q2_start <= q1_end:
-        return False
-    
-    gap_query = q2_start - q1_end
-    gap_ref = abs(r2_start - r1_end)
-    max_gap = max(gap_query * config.MAX_GAP_RATIO, config.MAX_FILL_GAP)
-    
-    return gap_ref <= max_gap
-
-def calculate_gap_penalty(anchor1, anchor2):
-    """Calculate penalty for gaps between anchors"""
-    gap_query = anchor2[0] - anchor1[1]
-    gap_ref = abs(anchor2[2] - anchor1[3])
-    return max(gap_query, gap_ref) * config.CHAIN_GAP_PENALTY
-
-def fill_gaps_between_anchors(chain, query, ref):
-    """Fill small gaps between consecutive anchors"""
-    if len(chain) <= 1:
-        return chain
-    
-    filled_chain = [chain[0]]
-    
-    for i in range(1, len(chain)):
-        prev_anchor = filled_chain[-1]
-        curr_anchor = chain[i]
+    for segment in valid_segments:
+        qstart, qend, rstart, rend = segment
         
-        gap_query = curr_anchor[0] - prev_anchor[1]
-        gap_ref = curr_anchor[2] - prev_anchor[3]
-        
-        # Try to fill small gaps
-        if 0 < gap_query <= config.MAX_FILL_GAP and 0 < gap_ref <= config.MAX_FILL_GAP:
-            # Simple gap filling - just extend the previous anchor
-            extended_anchor = (prev_anchor[0], curr_anchor[1], prev_anchor[2], curr_anchor[3])
-            filled_chain[-1] = extended_anchor
-        else:
-            filled_chain.append(curr_anchor)
+        # No overlap with previous segment
+        if qstart >= last_query_end:
+            selected.append(segment)
+            last_query_end = qend
     
-    return filled_chain
+    # Try to fill gaps between selected segments
+    return fill_gaps_between_segments(selected, query, ref)
+
+def fill_gaps_between_segments(segments, query, ref):
+    """Fill gaps between segments where possible"""
+    if len(segments) <= 1:
+        return segments
+    
+    filled = []
+    
+    for i, segment in enumerate(segments):
+        qstart, qend, rstart, rend = segment
+        
+        if i == 0:
+            # Try to extend first segment to start from 0
+            if qstart > 0:
+                gap_size = qstart
+                if gap_size <= 100 and rstart >= gap_size:  # Conservative gap filling
+                    # Check if we can extend with exact match
+                    can_extend = True
+                    for j in range(gap_size):
+                        if query[j] != ref[rstart - gap_size + j]:
+                            can_extend = False
+                            break
+                    
+                    if can_extend:
+                        qstart = 0
+                        rstart = rstart - gap_size
+        
+        # Try to fill gap with previous segment
+        if filled:
+            prev_qend = filled[-1][1]
+            gap_size = qstart - prev_qend
+            
+            if 0 < gap_size <= 50:  # Small gap
+                # Try to extend previous segment
+                prev_segment = filled[-1]
+                can_extend = True
+                for j in range(gap_size):
+                    if (prev_qend + j >= len(query) or 
+                        prev_segment[3] + j >= len(ref) or
+                        query[prev_qend + j] != ref[prev_segment[3] + j]):
+                        can_extend = False
+                        break
+                
+                if can_extend:
+                    # Merge with previous segment
+                    filled[-1] = (prev_segment[0], qend, prev_segment[2], rend)
+                    continue
+        
+        filled.append((qstart, qend, rstart, rend))
+    
+    # Try to extend last segment to end of query
+    if filled and filled[-1][1] < len(query):
+        last_segment = filled[-1]
+        gap_size = len(query) - last_segment[1]
+        if gap_size <= 100 and last_segment[3] + gap_size <= len(ref):
+            # Check if we can extend with exact match
+            can_extend = True
+            for j in range(gap_size):
+                if query[last_segment[1] + j] != ref[last_segment[3] + j]:
+                    can_extend = False
+                    break
+            
+            if can_extend:
+                filled[-1] = (last_segment[0], len(query), last_segment[2], last_segment[3] + gap_size)
+    
+    # Final validation: ensure no overlaps
+    final_result = []
+    last_end = 0
+    for segment in filled:
+        if segment[0] >= last_end:
+            final_result.append(segment)
+            last_end = segment[1]
+    
+    return final_result
 
 def main():
     q1 = q2 = r1 = r2 = ''
