@@ -2,94 +2,91 @@ from evaluate import calculate_value, seq2hashtable_multi_test, calculate_distan
 import config
 
 def find_alignment_tuples(query, ref):
-    # Generate anchors with multiple k-mer sizes for better coverage
+    # Generate anchors with different k-mer sizes
     all_anchors = []
-    for kmer_size in [12, 15, 18]:  # Multiple k-mer sizes
-        anchors = seq2hashtable_multi_test(ref, query, kmer_size, 1)  # Use shift=1 for maximum coverage
+    
+    # Use fewer strategies to reduce overlap complexity
+    for kmer_size in [config.SMALL_KMER_SIZE, config.KMER_SIZE]:
+        anchors = seq2hashtable_multi_test(ref, query, kmer_size, config.DENSE_SHIFT)
         all_anchors.extend(anchors)
     
     if len(all_anchors) == 0:
         return []
     
-    # Extend anchors conservatively to ensure validation passes
+    # Extend anchors conservatively
     segments = []
     for query_pos, ref_pos, strand, match_len in all_anchors:
         segment = extend_anchor_conservatively(query, ref, query_pos, ref_pos, strand, match_len)
         if segment and segment[1] - segment[0] >= config.MIN_SEGMENT_LENGTH:
             segments.append(segment)
     
-    # Remove overlaps and select best coverage - FIXED
-    return select_non_overlapping_segments(segments, query, ref)
+    # Ensure no overlapping segments
+    return select_non_overlapping_greedy(segments, query, ref)
 
 def extend_anchor_conservatively(query, ref, qpos, rpos, strand, initial_len):
-    """Conservatively extend anchor ensuring segments will pass validation"""
+    """Conservatively extend anchor with limited mismatch tolerance"""
     qlen, rlen = len(query), len(ref)
     rc_map = {'A': 'T', 'T': 'A', 'G': 'C', 'C': 'G'}
     
     if strand == 1:  # Forward strand
-        # Extend left with exact matching only
+        # Extend left conservatively
         left_ext = 0
-        while (qpos - left_ext > 0 and rpos - left_ext > 0 and 
-               query[qpos - left_ext - 1] == ref[rpos - left_ext - 1]):
-            left_ext += 1
-            if left_ext > 500:  # Reasonable limit
-                break
+        mismatches = 0
+        while (qpos - left_ext > 0 and rpos - left_ext > 0 and left_ext < 200):
+            if query[qpos - left_ext - 1] == ref[rpos - left_ext - 1]:
+                left_ext += 1
+            else:
+                mismatches += 1
+                if left_ext > 10 and mismatches / left_ext > 0.05:  # Very conservative
+                    break
+                left_ext += 1
         
-        # Extend right with exact matching only
+        # Extend right conservatively
         right_ext = 0
+        mismatches = 0
         while (qpos + initial_len + right_ext < qlen and 
-               rpos + initial_len + right_ext < rlen and
-               query[qpos + initial_len + right_ext] == ref[rpos + initial_len + right_ext]):
-            right_ext += 1
-            if right_ext > 500:  # Reasonable limit
-                break
+               rpos + initial_len + right_ext < rlen and 
+               right_ext < 200):
+            if query[qpos + initial_len + right_ext] == ref[rpos + initial_len + right_ext]:
+                right_ext += 1
+            else:
+                mismatches += 1
+                if right_ext > 10 and mismatches / right_ext > 0.05:
+                    break
+                right_ext += 1
         
-        qstart = qpos - left_ext
-        qend = qpos + initial_len + right_ext
-        rstart = rpos - left_ext
-        rend = rpos + initial_len + right_ext
-        
-        return (qstart, qend, rstart, rend)
+        return (qpos - left_ext, qpos + initial_len + right_ext, 
+                rpos - left_ext, rpos + initial_len + right_ext)
     
-    else:  # Reverse complement strand
-        # Extend left (query left, ref right) with exact matching
+    else:  # Reverse complement strand - exact matching only
         left_ext = 0
         while (qpos - left_ext > 0 and rpos + initial_len + left_ext < rlen and
+               left_ext < 200 and
                query[qpos - left_ext - 1] == rc_map.get(ref[rpos + initial_len + left_ext], 'N')):
             left_ext += 1
-            if left_ext > 500:
-                break
         
-        # Extend right (query right, ref left) with exact matching
         right_ext = 0
         while (qpos + initial_len + right_ext < qlen and rpos - right_ext > 0 and
+               right_ext < 200 and
                query[qpos + initial_len + right_ext] == rc_map.get(ref[rpos - right_ext - 1], 'N')):
             right_ext += 1
-            if right_ext > 500:
-                break
         
-        qstart = qpos - left_ext
-        qend = qpos + initial_len + right_ext
-        rstart = rpos - right_ext
-        rend = rpos + initial_len + left_ext
-        
-        return (qstart, qend, rstart, rend)
+        return (qpos - left_ext, qpos + initial_len + right_ext,
+                rpos - right_ext, rpos + initial_len + left_ext)
 
-def select_non_overlapping_segments(segments, query, ref):
-    """Select non-overlapping segments ensuring no query position overlap"""
+def select_non_overlapping_greedy(segments, query, ref):
+    """Greedy selection ensuring absolutely no overlaps"""
     if not segments:
         return []
     
-    # Remove duplicate segments
+    # Remove duplicates and invalid segments
     segments = list(set(segments))
-    
-    # Filter out invalid segments
     valid_segments = []
     for seg in segments:
         qstart, qend, rstart, rend = seg
         if (qend - qstart >= config.MIN_SEGMENT_LENGTH and 
             qend <= len(query) and rend <= len(ref) and
-            qstart >= 0 and rstart >= 0 and qend > qstart and rend > rstart):
+            qstart >= 0 and rstart >= 0 and qend > qstart):
             valid_segments.append(seg)
     
     if not valid_segments:
@@ -98,55 +95,55 @@ def select_non_overlapping_segments(segments, query, ref):
     # Sort by query start position
     valid_segments.sort(key=lambda x: x[0])
     
-    # Use greedy algorithm to select non-overlapping segments with maximum total length
+    # Greedy selection with strict non-overlap enforcement
     selected = []
     last_query_end = 0
     
     for segment in valid_segments:
         qstart, qend, rstart, rend = segment
         
-        # No overlap with previous segment
+        # Strict non-overlap check
         if qstart >= last_query_end:
             selected.append(segment)
             last_query_end = qend
     
-    # Try to fill gaps between selected segments
-    return fill_gaps_between_segments(selected, query, ref)
+    # Conservative gap filling
+    return fill_gaps_conservatively(selected, query, ref)
 
-def fill_gaps_between_segments(segments, query, ref):
-    """Fill gaps between segments where possible"""
+def fill_gaps_conservatively(segments, query, ref):
+    """Conservative gap filling to avoid creating overlaps"""
     if len(segments) <= 1:
         return segments
     
     filled = []
+    qlen = len(query)
     
     for i, segment in enumerate(segments):
         qstart, qend, rstart, rend = segment
         
-        if i == 0:
-            # Try to extend first segment to start from 0
-            if qstart > 0:
-                gap_size = qstart
-                if gap_size <= 100 and rstart >= gap_size:  # Conservative gap filling
-                    # Check if we can extend with exact match
-                    can_extend = True
-                    for j in range(gap_size):
-                        if query[j] != ref[rstart - gap_size + j]:
-                            can_extend = False
-                            break
-                    
-                    if can_extend:
-                        qstart = 0
-                        rstart = rstart - gap_size
+        # Try to extend first segment to start from 0
+        if i == 0 and qstart > 0:
+            gap_size = qstart
+            if gap_size <= 50 and rstart >= gap_size:  # Small gaps only
+                # Check for exact match extension
+                can_extend = True
+                for j in range(gap_size):
+                    if query[j] != ref[rstart - gap_size + j]:
+                        can_extend = False
+                        break
+                
+                if can_extend:
+                    qstart = 0
+                    rstart = rstart - gap_size
         
-        # Try to fill gap with previous segment
+        # Try to fill small gaps between segments
         if filled:
             prev_qend = filled[-1][1]
             gap_size = qstart - prev_qend
             
-            if 0 < gap_size <= 50:  # Small gap
-                # Try to extend previous segment
+            if 0 < gap_size <= 30:  # Very small gaps only
                 prev_segment = filled[-1]
+                # Check for exact match extension
                 can_extend = True
                 for j in range(gap_size):
                     if (prev_qend + j >= len(query) or 
@@ -156,18 +153,18 @@ def fill_gaps_between_segments(segments, query, ref):
                         break
                 
                 if can_extend:
-                    # Merge with previous segment
+                    # Merge segments
                     filled[-1] = (prev_segment[0], qend, prev_segment[2], rend)
                     continue
         
         filled.append((qstart, qend, rstart, rend))
     
     # Try to extend last segment to end of query
-    if filled and filled[-1][1] < len(query):
+    if filled and filled[-1][1] < qlen:
         last_segment = filled[-1]
-        gap_size = len(query) - last_segment[1]
-        if gap_size <= 100 and last_segment[3] + gap_size <= len(ref):
-            # Check if we can extend with exact match
+        gap_size = qlen - last_segment[1]
+        if gap_size <= 50 and last_segment[3] + gap_size <= len(ref):
+            # Check for exact match extension
             can_extend = True
             for j in range(gap_size):
                 if query[last_segment[1] + j] != ref[last_segment[3] + j]:
@@ -175,15 +172,16 @@ def fill_gaps_between_segments(segments, query, ref):
                     break
             
             if can_extend:
-                filled[-1] = (last_segment[0], len(query), last_segment[2], last_segment[3] + gap_size)
+                filled[-1] = (last_segment[0], qlen, last_segment[2], last_segment[3] + gap_size)
     
-    # Final validation: ensure no overlaps
+    # Final validation: absolutely ensure no overlaps
     final_result = []
     last_end = 0
     for segment in filled:
-        if segment[0] >= last_end:
-            final_result.append(segment)
-            last_end = segment[1]
+        qstart, qend, rstart, rend = segment
+        if qstart >= last_end and qend - qstart >= config.MIN_SEGMENT_LENGTH:
+            final_result.append((qstart, qend, rstart, rend))
+            last_end = qend
     
     return final_result
 
