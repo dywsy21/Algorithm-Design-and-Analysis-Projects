@@ -17,8 +17,8 @@ def find_alignment_tuples(query, ref):
             'gap_fill_end_max': config.T2_GAP_FILL_END_MAX
         }
     else:
-        # Long sequence parameters - add larger k-mer for higher specificity
-        kmer_sizes = [config.SMALL_KMER_SIZE, config.KMER_SIZE, config.LARGE_KMER_SIZE]
+        # Long sequence parameters
+        kmer_sizes = config.T1_KMER_SIZES
         params = {
             'extension_limit': config.T1_EXTENSION_LIMIT_LONG,
             'extension_limit_rc': config.T1_EXTENSION_LIMIT_RC,

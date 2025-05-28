@@ -30,6 +30,16 @@ T1_MERGED_SEGMENT_EDIT_RATE = 0.12 # More lenient edit rate for merged segments
 T2_SMALL_GAP_MAX = 20         # Maximum small gap size for short sequences
 T2_SMALL_GAP_MISMATCH_RATE = 0.15 # Allowed mismatch rate for small gaps
 
+# T1 parameters (long sequences) - current best performing values
+T1_KMER_SIZES = [7, 8, 9, 10, 14, 15, 18]  # K-mer sizes for long sequences
+T1_EXTENSION_LIMIT_LONG = 198  # Extension limit for long sequences
+T1_EXTENSION_LIMIT_RC = 198  # Extension limit for reverse complement
+T1_MISMATCH_THRESHOLD_EARLY = 15  # Early mismatch threshold
+T1_MISMATCH_RATE = 0.09  # Mismatch rate threshold
+T1_GAP_FILL_START_MAX = 50  # Maximum gap size for start extension
+T1_GAP_FILL_BETWEEN_MAX = 30  # Maximum gap size for between-segment filling
+T1_GAP_FILL_END_MAX = 50  # Maximum gap size for end extension
+
 # T2 parameters (short sequences) - current best performing values
 T2_KMER_SIZES = [6, 7, 8, 9, 11, 13, 15]  # K-mer sizes for short sequences
 T2_EXTENSION_LIMIT_SHORT = 74  # Extension limit for short sequences
@@ -39,12 +49,3 @@ T2_MISMATCH_RATE = 0.08  # Mismatch rate threshold
 T2_GAP_FILL_START_MAX = 60  # Maximum gap size for start extension
 T2_GAP_FILL_BETWEEN_MAX = 40  # Maximum gap size for between-segment filling
 T2_GAP_FILL_END_MAX = 60  # Maximum gap size for end extension
-
-# T1 parameters (long sequences) - current best performing values
-T1_EXTENSION_LIMIT_LONG = 198  # Extension limit for long sequences
-T1_EXTENSION_LIMIT_RC = 198  # Extension limit for reverse complement
-T1_MISMATCH_THRESHOLD_EARLY = 15  # Early mismatch threshold
-T1_MISMATCH_RATE = 0.09  # Mismatch rate threshold
-T1_GAP_FILL_START_MAX = 50  # Maximum gap size for start extension
-T1_GAP_FILL_BETWEEN_MAX = 30  # Maximum gap size for between-segment filling
-T1_GAP_FILL_END_MAX = 50  # Maximum gap size for end extension
