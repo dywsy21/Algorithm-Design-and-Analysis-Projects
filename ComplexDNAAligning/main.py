@@ -1,5 +1,6 @@
 from evaluate import calculate_value, seq2hashtable_multi_test, calculate_distance
 import config
+import time
 
 def find_alignment_tuples(query, ref):
     """Main entry point - determine strategy based on sequence length"""
@@ -215,6 +216,8 @@ def validate_no_overlaps(segments):
     return validated
 
 def main():
+    start_time = time.time()
+    
     q1 = q2 = r1 = r2 = ''
     with open('data/query1.txt', 'r') as f:
         q1 = f.read()
@@ -228,13 +231,34 @@ def main():
     q2 = q2.strip()
     r1 = r1.strip()
     r2 = r2.strip()
+    
+    print(f"Data loading completed in {time.time() - start_time:.3f} seconds")
+    
+    # Time T1 alignment
+    t1_start = time.time()
     t1 = find_alignment_tuples(q1, r1)
+    t1_time = time.time() - t1_start
+    
+    # Time T2 alignment
+    t2_start = time.time()
     t2 = find_alignment_tuples(q2, r2)
+    t2_time = time.time() - t2_start
+    
+    # Calculate scores
+    score_start = time.time()
+    t1_score = calculate_value(str(t1), r1, q1)
+    t2_score = calculate_value(str(t2), r2, q2)
+    score_time = time.time() - score_start
+    
+    total_time = time.time() - start_time
+    
+    # Output results with timing information
     print('t1: ', t1)
     print('t2: ', t2)
-    print('t1 score: ', calculate_value(str(t1), r1, q1))
-    print('t2 score: ', calculate_value(str(t2), r2, q2))
-
-
+    print(f't1 score: {t1_score}')
+    print(f't2 score: {t2_score}')
+    print(f'T1 alignment time: {t1_time:.3f} seconds')
+    print(f'T2 alignment time: {t2_time:.3f} seconds')
+    
 if __name__ == "__main__":
     main()
