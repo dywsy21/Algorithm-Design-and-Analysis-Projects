@@ -1,908 +1,313 @@
-from collections import defaultdict
-import sys
+from evaluate import calculate_value, seq2hashtable_multi_test, calculate_distance
+import config
 import time
-import os
-import heapq
-import random
-# Import config parameters
-from config import *
 
-def read_sequence(file_path):
-    """Read DNA sequence from file"""
-    with open(file_path, 'r') as f:
-        return f.read().strip()
-
-def reverse_complement(seq):
-    """Return the reverse complement of a DNA sequence"""
-    complement = {'A': 'T', 'C': 'G', 'G': 'C', 'T': 'A'}
-    return ''.join(complement.get(base, 'N') for base in reversed(seq))
-
-def find_exact_matches(query, ref, k=DEFAULT_K):
-    """Find exact matches of length k between query and reference"""
-    # Create hash table for reference k-mers
-    ref_kmers = defaultdict(list)
-    for i in range(len(ref) - k + 1):
-        kmer = ref[i:i+k]
-        ref_kmers[kmer].append(i)
-    
-    # Find matching k-mers in query
-    matches = []
-    for i in range(len(query) - k + 1):
-        kmer = query[i:i+k]
-        if kmer in ref_kmers:
-            for r_pos in ref_kmers[kmer]:
-                matches.append((i, r_pos, k))
-    
-    return matches
-
-def extend_match(query, ref, q_start, r_start, k, min_match_length=MIN_MATCH_LENGTH, max_errors=EXTEND_MAX_ERRORS):
-    """Extend a k-mer match to a longer anchor with error tolerance"""
-    q_end = q_start + k
-    r_end = r_start + k
-    
-    # Track matches and mismatches
-    matches = k  # Start with k matches
-    errors = 0
-    
-    # Extend forward
-    while q_end < len(query) and r_end < len(ref) and errors <= max_errors:
-        if query[q_end] == ref[r_end]:
-            q_end += 1
-            r_end += 1
-            matches += 1
-        else:
-            # Check for small indels (1-2 bases)
-            indel_match = False
-            
-            # Try insertion in query
-            for ins in range(1, 3):
-                if q_end + ins < len(query) and r_end < len(ref):
-                    if query[q_end + ins] == ref[r_end]:
-                        q_end += ins + 1
-                        r_end += 1
-                        errors += 1
-                        indel_match = True
-                        break
-            
-            # Try insertion in reference
-            if not indel_match:
-                for ins in range(1, 3):
-                    if r_end + ins < len(ref) and q_end < len(query):
-                        if query[q_end] == ref[r_end + ins]:
-                            q_end += 1
-                            r_end += ins + 1
-                            errors += 1
-                            indel_match = True
-                            break
-            
-            # If no indel match, count as mismatch
-            if not indel_match:
-                q_end += 1
-                r_end += 1
-                errors += 1
-    
-    # Extend backward
-    errors = 0  # Reset error count for backward extension
-    while q_start > 0 and r_start > 0 and errors <= max_errors:
-        if query[q_start - 1] == ref[r_start - 1]:
-            q_start -= 1
-            r_start -= 1
-            matches += 1
-        else:
-            # Check for small indels (1-2 bases)
-            indel_match = False
-            
-            # Try insertion in query
-            for ins in range(1, 3):
-                if q_start - ins > 0 and r_start > 0:
-                    if query[q_start - ins - 1] == ref[r_start - 1]:
-                        q_start -= ins + 1
-                        r_start -= 1
-                        errors += 1
-                        indel_match = True
-                        break
-            
-            # Try insertion in reference
-            if not indel_match:
-                for ins in range(1, 3):
-                    if r_start - ins > 0 and q_start > 0:
-                        if query[q_start - 1] == ref[r_start - ins - 1]:
-                            q_start -= 1
-                            r_start -= ins + 1
-                            errors += 1
-                            indel_match = True
-                            break
-            
-            # If no indel match, count as mismatch
-            if not indel_match:
-                q_start -= 1
-                r_start -= 1
-                errors += 1
-    
-    # Calculate alignment quality metrics
-    match_length = q_end - q_start
-    if match_length > 0:
-        # Calculate a more accurate identity metric considering indels
-        q_segment = query[q_start:q_end]
-        r_segment = ref[r_start:r_end]
-        
-        # Use more sophisticated identity calculation for better accuracy
-        identity = matches / match_length
-        
-        # Adjust identity score based on local context
-        if match_length > 50:
-            # For longer matches, check local context
-            context_size = min(20, match_length // 4)
-            
-            # Check left context if possible
-            if q_start >= context_size and r_start >= context_size:
-                left_q = query[q_start-context_size:q_start]
-                left_r = ref[r_start-context_size:r_start]
-                left_matches = sum(1 for i in range(context_size) if left_q[i] == left_r[i])
-                identity = (identity * match_length + left_matches * 0.5) / (match_length + context_size * 0.5)
-    
-    if match_length >= min_match_length and identity >= MIN_IDENTITY_THRESHOLD:
-        # Score calculation with enhanced context awareness
-        score = match_length * identity * (1 - 0.05 * errors)
-        return (q_start, q_end, r_start, r_end, score, identity)
+def find_alignment_unified(query, ref, kmer_sizes, params):
+    all_anchors = []
+    if len(query) < config.SHORT_SEQUENCE_THRESHOLD:
+        shift = 1 
+        for kmer_size in kmer_sizes:
+            if kmer_size <= 5:
+                anchors = seq2hashtable_multi_test(ref, query, kmer_size, config.T2_SMALL_KMER_SHIFT)
+                all_anchors.extend(anchors)
+            elif kmer_size <= 8:
+                anchors = seq2hashtable_multi_test(ref, query, kmer_size, config.T2_MEDIUM_KMER_SHIFT)
+                all_anchors.extend(anchors)
+            else:
+                anchors = seq2hashtable_multi_test(ref, query, kmer_size, shift)
+                all_anchors.extend(anchors)
     else:
-        return None
-
-def find_anchors(query, ref, k=DEFAULT_K, min_match_length=MIN_MATCH_LENGTH, stride=DEFAULT_STRIDE, max_errors=DEFAULT_MAX_ERRORS):
-    """Find anchor regions between query and reference"""
-    exact_matches = find_exact_matches(query, ref, k)
-    anchors = []
-    processed = set()
-    
-    for i, (q_start, r_start, k_size) in enumerate(exact_matches):
-        # Skip processed positions or use stride to sample
-        if i % stride != 0 and (q_start, r_start) in processed:
-            continue
-        
-        # Extend match in both directions
-        anchor = extend_match(query, ref, q_start, r_start, k_size, min_match_length, max_errors)
-        if anchor:
-            anchors.append(anchor)
-            q_s, q_e, r_s, r_e, _, _ = anchor
-            
-            # Mark key positions as processed
-            stride_factor = max(1, (q_e - q_s) // 10)
-            for j in range(0, q_e - q_s, stride_factor):
-                if q_s + j < len(query) and r_s + j < len(ref):
-                    processed.add((q_s + j, r_s + j))
-    
-    # Filter out overlapping and low-quality anchors
-    return filter_anchors(anchors)
-
-def filter_anchors(anchors, overlap_threshold=DEFAULT_OVERLAP_THRESHOLD):
-    """Filter and prioritize anchors based on quality and overlap"""
-    if not anchors:
+        shift = config.DENSE_SHIFT
+        for kmer_size in kmer_sizes:
+            anchors = seq2hashtable_multi_test(ref, query, kmer_size, shift)
+            all_anchors.extend(anchors)
+    if not all_anchors:
         return []
     
-    # Sort by score (highest first)
-    anchors.sort(key=lambda x: x[4], reverse=True)
+    segments = []
+    for query_pos, ref_pos, strand, match_len in all_anchors:
+        segment = extend_anchor_unified(query, ref, query_pos, ref_pos, strand, match_len, params)
+        if segment and segment[1] - segment[0] >= config.MIN_SEGMENT_LENGTH:
+            if is_segment_valid(query, ref, *segment):
+                segments.append(segment)
     
-    filtered = []
-    excluded = set()
-    
-    for i, anchor_i in enumerate(anchors):
-        if i in excluded:
-            continue
-            
-        filtered.append(anchor_i)
-        q_start_i, q_end_i, r_start_i, r_end_i, _, _ = anchor_i
-        
-        for j in range(i+1, len(anchors)):
-            if j in excluded:
-                continue
-                
-            q_start_j, q_end_j, r_start_j, r_end_j, _, _ = anchors[j]
-            
-            # Check query overlap
-            q_overlap_start = max(q_start_i, q_start_j)
-            q_overlap_end = min(q_end_i, q_end_j)
-            q_overlap = max(0, q_overlap_end - q_overlap_start)
-            q_len_j = q_end_j - q_start_j
-            q_overlap_ratio = q_overlap / q_len_j if q_len_j > 0 else 0
-            
-            # Check reference overlap
-            r_overlap_start = max(r_start_i, r_start_j)
-            r_overlap_end = min(r_end_i, r_end_j)
-            r_overlap = max(0, r_overlap_end - r_overlap_start)
-            r_len_j = r_end_j - r_start_j
-            r_overlap_ratio = r_overlap / r_len_j if r_len_j > 0 else 0
-            
-            # Exclude if significant overlap in either dimension
-            if q_overlap_ratio > overlap_threshold or r_overlap_ratio > overlap_threshold:
-                excluded.add(j)
-    
-    return sorted(filtered, key=lambda x: x[0])  # Sort by query start for next steps
+    return select_segments_unified(segments, query, ref, params)
 
-def find_reverse_anchors(query, ref, k=DEFAULT_K, min_match_length=MIN_MATCH_LENGTH, stride=DEFAULT_STRIDE, max_errors=DEFAULT_MAX_ERRORS):
-    """Find anchors between query and reverse complement of reference"""
-    rev_ref = reverse_complement(ref)
-    anchors = find_anchors(query, rev_ref, k, min_match_length, stride, max_errors)
+def extend_anchor_unified(query, ref, qpos, rpos, strand, initial_len, params):
+    qlen, rlen = len(query), len(ref)
+    rc_map = {'A': 'T', 'T': 'A', 'G': 'C', 'C': 'G'}
     
-    # Convert coordinates for reverse complement matches
-    rev_anchors = []
-    for q_start, q_end, r_start, r_end, score, identity in anchors:
-        orig_r_start = len(ref) - r_end
-        orig_r_end = len(ref) - r_start
-        rev_anchors.append((q_start, q_end, orig_r_start, orig_r_end, score, identity))
-    
-    return rev_anchors
-
-def find_uncovered_regions(query, segments):
-    """Find regions in the query that are not covered by any segment"""
-    if not segments:
-        return [(0, len(query) - 1)]  # Return the entire query if no segments
-    
-    # Sort segments by query start position
-    sorted_segments = sorted(segments, key=lambda x: x[0])
-    
-    # Find uncovered regions
-    uncovered = []
-    current_pos = 0
-    
-    for q_start, q_end, _, _ in sorted_segments:
-        # Add uncovered region if there's a gap
-        if q_start > current_pos:
-            uncovered.append((current_pos, q_start - 1))
-        
-        # Update current position
-        current_pos = max(current_pos, q_end + 1)
-    
-    # Check if there's a gap at the end
-    if current_pos < len(query):
-        uncovered.append((current_pos, len(query) - 1))
-    
-    return uncovered
-
-def find_matches_in_large_region(query_region, ref, max_segment_size=MAX_SEGMENT_SIZE, min_match_length=MIN_MATCH_LENGTH, max_errors=DEFAULT_MAX_ERRORS):
-    """Find multiple matches for a large uncovered region using a divide-and-conquer approach"""
-    region_len = len(query_region)
-    
-    # For smaller regions, use direct matching
-    if region_len <= max_segment_size:
-        return find_matches_in_region(query_region, ref, min_match_length)
-    
-    matches = []
-    
-    # Adaptive chunk size based on region length
-    if region_len > 5000:
-        chunk_size = LARGE_REGION_CHUNK_SIZE
-        overlap = LARGE_REGION_OVERLAP  # Larger overlap for very large regions
-    else:
-        chunk_size = max_segment_size
-        overlap = int(chunk_size // STANDARD_CHUNK_OVERLAP_RATIO)  # One third overlap
-    
-    # Process region in overlapping chunks with adaptive parameters
-    for i in range(0, region_len, chunk_size - overlap):
-        chunk_start = i
-        chunk_end = min(i + chunk_size, region_len)
-        
-        # Skip very small remaining chunks
-        if chunk_end - chunk_start < min_match_length:
-            continue
-            
-        chunk = query_region[chunk_start:chunk_end]
-        
-        # Adjust k-mer size based on chunk length
-        chunk_len = len(chunk)
-        if chunk_len < 100:
-            k_values = VERY_SHORT_SEGMENT_K_VALUES
-        elif chunk_len < 300:
-            k_values = SHORT_SEGMENT_K_VALUES
-        else:
-            k_values = LONGER_SEGMENT_K_VALUES
-            
-        # Try multiple k-mer sizes per chunk for better sensitivity
-        for k in k_values:
-            if k >= chunk_len:
-                continue
-                
-            # More sensitive parameters for boundary chunks
-            increased_sensitivity = (i == 0 or chunk_end == region_len)
-            max_errors_adj = max_errors + BOUNDARY_EXTRA_ERRORS if increased_sensitivity else max_errors
-            
-            # Find forward and reverse anchors
-            forward_anchors = find_anchors(chunk, ref, k=k, min_match_length=min_match_length, 
-                                         stride=1, max_errors=max_errors_adj)
-            
-            # Adjust coords and add to matches
-            for q_s, q_e, r_s, r_e, score, identity in forward_anchors:
-                matches.append((q_s + chunk_start, q_e + chunk_start, r_s, r_e, score, identity, 'f'))
-            
-            # Try reverse complement matching similarly
-            rev_ref = reverse_complement(ref)
-            rev_anchors = find_anchors(chunk, rev_ref, k=k, min_match_length=min_match_length, 
-                                     stride=1, max_errors=max_errors_adj)
-            
-            # Adjust coords for reverse matches
-            for q_s, q_e, r_s, r_e, score, identity in rev_anchors:
-                orig_r_start = len(ref) - r_e
-                orig_r_end = len(ref) - r_s
-                matches.append((q_s + chunk_start, q_e + chunk_start, 
-                              orig_r_start, orig_r_end, score, identity, 'r'))
-    
-    # Enhanced filtering with adaptive overlap threshold
-    if matches:
-        matches.sort(key=lambda x: x[4], reverse=True)  # Sort by score
-        
-        filtered = []
-        excluded = set()
-        
-        # Use adaptive overlap threshold based on match length
-        for i, match_i in enumerate(matches):
-            if i in excluded:
-                continue
-                
-            filtered.append(match_i)
-            q_start_i, q_end_i, r_start_i, r_end_i, score_i, identity_i, _ = match_i
-            match_len_i = q_end_i - q_start_i
-            
-            # Adaptive threshold: allow less overlap for longer, high-identity matches
-            overlap_threshold = HIGH_QUALITY_OVERLAP_THRESHOLD if identity_i > 0.9 and match_len_i > 100 else DEFAULT_OVERLAP_THRESHOLD
-            
-            for j in range(len(matches)):
-                if j == i or j in excluded:
-                    continue
-                    
-                q_start_j, q_end_j = matches[j][0], matches[j][1]
-                
-                # Check for significant overlap
-                overlap_start = max(q_start_i, q_start_j)
-                overlap_end = min(q_end_i, q_end_j)
-                overlap = max(0, overlap_end - overlap_start)
-                
-                min_len = min(q_end_i - q_start_i, q_end_j - q_start_j)
-                overlap_ratio = overlap / min_len if min_len > 0 else 0
-                
-                if overlap_ratio > overlap_threshold:
-                    excluded.add(j)
-        
-        return filtered
-    
-    return []
-
-def find_matches_in_region(query_region, ref, min_match_length=MIN_MATCH_LENGTH, max_errors=DEFAULT_MAX_ERRORS):
-    """Find matches for a smaller region"""
-    segment_len = len(query_region)
-    
-    # Use smaller k for shorter segments
-    if segment_len < 50:
-        k_size = SMALL_K_FOR_SHORT_SEGMENTS
-    elif segment_len < 100:
-        k_size = MEDIUM_K_FOR_SHORT_SEGMENTS
-    else:
-        k_size = LARGE_K_FOR_SHORT_SEGMENTS
-    
-    matches = []
-    
-    # Find matches with forward orientation
-    forward_anchors = find_anchors(query_region, ref, k=k_size, 
-                                min_match_length=min_match_length, stride=1, 
-                                max_errors=max(3, min_match_length // 10))
-    
-    # Adjust coordinates to match the original query region
-    for q_s, q_e, r_s, r_e, score, identity in forward_anchors:
-        matches.append((q_s, q_e, r_s, r_e, score, identity, 'f'))
-    
-    # Also try reverse complement matching
-    rev_ref = reverse_complement(ref)
-    rev_anchors = find_anchors(query_region, rev_ref, k=k_size, 
-                             min_match_length=min_match_length, stride=1, 
-                             max_errors=max(3, min_match_length // 10))
-    
-    # Adjust coordinates for reverse matches
-    for q_s, q_e, r_s, r_e, score, identity in rev_anchors:
-        orig_r_start = len(ref) - r_e
-        orig_r_end = len(ref) - r_s
-        matches.append((q_s, q_e, orig_r_start, orig_r_end, score, identity, 'r'))
-    
-    return matches
-
-def ensure_complete_coverage(query, ref, segments):
-    """Ensure the entire query is covered by finding fine-grained matches for uncovered regions"""
-    # Find uncovered regions
-    uncovered = find_uncovered_regions(query, segments)
-    
-    if not uncovered:
-        return segments  # Already complete coverage
-    
-    print(f"Found {len(uncovered)} uncovered regions in query")
-    
-    complete_segments = list(segments)
-    
-    # Process each uncovered region
-    for i, (start, end) in enumerate(uncovered):
-        region_len = end - start + 1
-        print(f"Processing uncovered region {i+1}/{len(uncovered)}: positions {start}-{end} (length: {region_len})")
-        
-        # Skip very small regions
-        if region_len < VERY_SMALL_REGION_THRESHOLD:
-            print(f"  Skipping very small region (length: {region_len})")
-            # Small gap handling can be done in the merging stage
-            continue
-        
-        # Extract the query region
-        query_region = query[start:end+1]
-        
-        # For large regions, use divide-and-conquer approach
-        if region_len > 1000:
-            print(f"  Large region detected, using divide-and-conquer approach")
-            region_matches = find_matches_in_large_region(query_region, ref, max_segment_size=500)
-            
-            # Adjust coordinates to match the original query
-            adjusted_matches = []
-            for q_s, q_e, r_s, r_e, score, identity, orientation in region_matches:
-                adjusted_matches.append((q_s + start, q_e + start, r_s, r_e, score, identity, orientation))
-            
-            region_matches = adjusted_matches
-        else:
-            # For smaller regions, find matches directly
-            region_matches = find_matches_in_region(query_region, ref)
-            
-            # Adjust coordinates to match the original query
-            adjusted_matches = []
-            for q_s, q_e, r_s, r_e, score, identity, orientation in region_matches:
-                adjusted_matches.append((q_s + start, q_e + start, r_s, r_e, score, identity, orientation))
-            
-            region_matches = adjusted_matches
-        
-        if region_matches:
-            print(f"  Found {len(region_matches)} potential matches for region")
-            
-            # Sort by score
-            region_matches.sort(key=lambda x: x[4], reverse=True)
-            
-            # Add non-overlapping matches to our segments
-            for match in region_matches:
-                q_start, q_end, r_start, r_end, _, _, _ = match
-                
-                # Check for overlaps with existing segments
-                overlaps = False
-                for existing_seg in complete_segments:
-                    q_s, q_e = existing_seg[0], existing_seg[1]
-                    
-                    # Check if there's significant overlap
-                    overlap = max(0, min(q_e, q_end) - max(q_s, q_start))
-                    if overlap > 0:
-                        overlaps = True
-                        break
-                
-                if not overlaps:
-                    complete_segments.append((q_start, q_end, r_start, r_end))
-        else:
-            print(f"  No matches found for region. Creating segments to ensure coverage.")
-            
-            # If no matches found for a large region, divide it into smaller segments
-            if region_len > MAX_SEGMENT_SIZE:
-                # Divide into chunks of approximately 300bp
-                chunk_size = SMALL_SEGMENT_LENGTH
-                for chunk_start in range(0, region_len, chunk_size):
-                    chunk_end = min(chunk_start + chunk_size, region_len)
-                    q_chunk_start = start + chunk_start
-                    q_chunk_end = start + chunk_end - 1
-                    
-                    # Try to find some match in reference
-                    chunk = query_region[chunk_start:chunk_end]
-                    
-                    # Simple matching heuristic for fallback
-                    best_r_start = 0
-                    best_score = -1
-                    
-                    # Try a few random positions in ref
-                    sample_step = max(1, len(ref) // SAMPLE_POSITIONS_COUNT)  # Try ~20 positions
-                    for r_pos in range(0, len(ref) - len(chunk) + 1, sample_step):
-                        ref_chunk = ref[r_pos:r_pos + len(chunk)]
-                        matches = sum(1 for i in range(len(chunk)) if i < len(ref_chunk) and chunk[i] == ref_chunk[i])
-                        score = matches / len(chunk)
-                        
-                        if score > best_score:
-                            best_score = score
-                            best_r_start = r_pos
-                    
-                    r_chunk_start = best_r_start
-                    r_chunk_end = r_chunk_start + len(chunk) - 1
-                    
-                    # Add this segment
-                    complete_segments.append((q_chunk_start, q_chunk_end, r_chunk_start, r_chunk_end))
+    if strand == 1: 
+        left_ext = 0
+        mismatches = 0
+        while (qpos - left_ext > 0 and rpos - left_ext > 0 and left_ext < params['extension_limit']):
+            if query[qpos - left_ext - 1] == ref[rpos - left_ext - 1]:
+                left_ext += 1
             else:
-                # For smaller regions, just add one segment
-                # Try to find the best approximate match
-                best_r_start = start % len(ref)  # Default fallback
-                
-                # Add the segment
-                complete_segments.append((start, end, best_r_start, best_r_start + region_len - 1))
-    
-    # Ensure segments are sorted and non-overlapping
-    complete_segments.sort(key=lambda x: x[0])
-    
-    # Resolve any remaining overlaps
-    non_overlapping = []
-    if complete_segments:
-        current = complete_segments[0]
-        
-        for next_seg in complete_segments[1:]:
-            q_curr_start, q_curr_end, r_curr_start, r_curr_end = current
-            q_next_start, q_next_end, r_next_start, r_next_end = next_seg
-            
-            # Check for overlap
-            if q_next_start <= q_curr_end:
-                # Choose the better segment (prefer original segments, then longer ones)
-                curr_len = q_curr_end - q_curr_start
-                next_len = q_next_end - q_next_start
-                
-                if next_seg in segments and current not in segments:
-                    current = next_seg
-                elif curr_len >= next_len:
-                    pass  # Keep current
+                mismatches += 1
+                if left_ext > params['mismatch_threshold'] and mismatches / left_ext > params['mismatch_rate']:
+                    break
+                left_ext += 1
+        right_ext = 0
+        mismatches = 0
+        while (qpos + initial_len + right_ext < qlen and 
+               rpos + initial_len + right_ext < rlen and 
+               right_ext < params['extension_limit']):
+            if query[qpos + initial_len + right_ext] == ref[rpos + initial_len + right_ext]:
+                right_ext += 1
+            else:
+                mismatches += 1
+                if right_ext > params['mismatch_threshold'] and mismatches / right_ext > params['mismatch_rate']:
+                    break
+                right_ext += 1
+        if qlen < config.SHORT_SEQUENCE_THRESHOLD:
+            if qpos - left_ext <= config.T1_BOUNDARY_TOLERANCE and rpos - left_ext >= 0:
+                boundary_left = min(qpos, rpos)
+                left_ext = max(left_ext, boundary_left)
+            if qpos + initial_len + right_ext >= qlen - config.T1_BOUNDARY_TOLERANCE and rpos + initial_len + right_ext + (qlen - qpos - initial_len - right_ext) <= rlen:
+                boundary_right = qlen - qpos - initial_len
+                right_ext = max(right_ext, boundary_right)
+        return (qpos - left_ext, qpos + initial_len + right_ext, 
+                rpos - left_ext, rpos + initial_len + right_ext)
+    else: 
+        if qlen < config.SHORT_SEQUENCE_THRESHOLD:
+            left_ext = 0
+            left_mismatches = 0
+            while (qpos - left_ext > 0 and rpos + initial_len + left_ext < rlen and
+                   left_ext < params['extension_limit_rc']):
+                expected_char = rc_map.get(ref[rpos + initial_len + left_ext], 'N')
+                if query[qpos - left_ext - 1] == expected_char:
+                    left_ext += 1
                 else:
-                    current = next_seg
-            else:
-                non_overlapping.append(current)
-                current = next_seg
-        
-        non_overlapping.append(current)
-    
-    # Verify coverage
-    final_uncovered = find_uncovered_regions(query, non_overlapping)
-    if final_uncovered:
-        print(f"Warning: {len(final_uncovered)} regions still uncovered. Adding final segments.")
-        
-        # Add any remaining uncovered regions
-        final_segments = list(non_overlapping)
-        
-        for start, end in final_uncovered:
-            region_len = end - start + 1
-            # Match to a reasonable position in reference
-            r_start = start % len(ref)
-            r_end = r_start + region_len - 1
+                    left_mismatches += 1
+                    if left_ext > config.T1_RC_MIN_LENGTH and left_mismatches / left_ext > config.T1_RC_MISMATCH_RATE:
+                        break
+                    left_ext += 1
+            right_ext = 0
+            right_mismatches = 0
+            while (qpos + initial_len + right_ext < qlen and rpos - right_ext > 0 and
+                   right_ext < params['extension_limit_rc']):
+                expected_char = rc_map.get(ref[rpos - right_ext - 1], 'N')
+                if query[qpos + initial_len + right_ext] == expected_char:
+                    right_ext += 1
+                else:
+                    right_mismatches += 1
+                    if right_ext > config.T1_RC_MIN_LENGTH and right_mismatches / right_ext > config.T1_RC_MISMATCH_RATE:
+                        break
+                    right_ext += 1
+        else:
+            left_ext = 0
+            while (qpos - left_ext > 0 and rpos + initial_len + left_ext < rlen and
+                   left_ext < params['extension_limit_rc'] and
+                   query[qpos - left_ext - 1] == rc_map.get(ref[rpos + initial_len + left_ext], 'N')):
+                left_ext += 1
             
-            final_segments.append((start, end, r_start, r_end))
-            
-        # Re-sort and check for overlaps
-        final_segments.sort(key=lambda x: x[0])
-        return resolve_overlaps(final_segments)
-    
-    return non_overlapping
+            right_ext = 0
+            while (qpos + initial_len + right_ext < qlen and rpos - right_ext > 0 and
+                   right_ext < params['extension_limit_rc'] and
+                   query[qpos + initial_len + right_ext] == rc_map.get(ref[rpos - right_ext - 1], 'N')):
+                right_ext += 1
+        return (qpos - left_ext, qpos + initial_len + right_ext,
+                rpos - right_ext, rpos + initial_len + left_ext)
 
-def resolve_overlaps(segments):
-    """Resolve any overlapping segments in query coordinates"""
+def select_segments_unified(segments, query, ref, params):
     if not segments:
         return []
-        
-    # Sort by query start position
-    sorted_segs = sorted(segments, key=lambda x: x[0])
-    
-    # Handle overlaps by keeping the longer segment
-    result = [sorted_segs[0]]
-    
-    for curr in sorted_segs[1:]:
-        prev = result[-1]
-        
-        # Check for overlap
-        if curr[0] <= prev[1]:
-            # Overlapping segments - keep the longer one
-            curr_len = curr[1] - curr[0]
-            prev_len = prev[1] - prev[0]
+    valid_segments = list(set(segments))
+    valid_segments.sort(key=lambda x: x[0])
+    selected = []
+    last_query_end = 0
+    for segment in valid_segments:
+        qstart, qend, rstart, rend = segment
+        if qstart >= last_query_end:
+            selected.append(segment)
+            last_query_end = qend
+    return gap_fill_unified(selected, query, ref, params)
+
+def gap_fill_unified(segments, query, ref, params):
+    if not segments:
+        return []
+    filled = []
+    qlen = len(query)
+    for i, segment in enumerate(segments):
+        qstart, qend, rstart, rend = segment
+        if i == 0 and qstart > 0:
+            gap_size = qstart
+            if gap_size <= params['gap_fill_start_max'] and rstart >= gap_size:
+                can_extend = all(query[j] == ref[rstart - gap_size + j] 
+                               for j in range(gap_size))
+                if can_extend:
+                    extended_segment = (0, qend, rstart - gap_size, rend)
+                    if is_segment_valid(query, ref, *extended_segment):
+                        qstart, rstart = 0, rstart - gap_size
+        if filled:
+            prev_qend = filled[-1][1]
+            gap_size = qstart - prev_qend
+            if 0 < gap_size <= params['gap_fill_between_max']:
+                prev_segment = filled[-1]
+                can_extend = all(
+                    prev_qend + j < len(query) and 
+                    prev_segment[3] + j < len(ref) and
+                    query[prev_qend + j] == ref[prev_segment[3] + j]
+                    for j in range(gap_size)
+                )
+                if can_extend:
+                    merged_segment = (prev_segment[0], qend, prev_segment[2], rend)
+                    if is_segment_valid(query, ref, *merged_segment):
+                        filled[-1] = merged_segment
+                        continue
+        filled.append((qstart, qend, rstart, rend))
+   
+    if filled and filled[-1][1] < qlen:
+        last_segment = filled[-1]
+        gap_size = qlen - last_segment[1]
+        if gap_size <= params['gap_fill_end_max'] and last_segment[3] + gap_size <= len(ref):
+            can_extend = all(query[last_segment[1] + j] == ref[last_segment[3] + j]
+                           for j in range(gap_size))
+            if can_extend:
+                extended_segment = (last_segment[0], qlen, last_segment[2], last_segment[3] + gap_size)
+                if is_segment_valid(query, ref, *extended_segment):
+                    filled[-1] = extended_segment
+   
+    if len(query) < config.SHORT_SEQUENCE_THRESHOLD:
+        final_filled = []
+        for i, segment in enumerate(filled):
+            qstart, qend, rstart, rend = segment
+            if final_filled:
+                prev_qend = final_filled[-1][1]
+                gap_size = qstart - prev_qend
+                if 0 < gap_size <= config.T2_SMALL_GAP_MAX:
+                    prev_segment = final_filled[-1]
+                    mismatches = sum(1 for j in range(gap_size) 
+                                   if prev_qend + j < len(query) and 
+                                      prev_segment[3] + j < len(ref) and
+                                      query[prev_qend + j] != ref[prev_segment[3] + j])
+                    
+                    if mismatches / gap_size <= config.T2_SMALL_GAP_MISMATCH_RATE: 
+                        merged_segment = (prev_segment[0], qend, prev_segment[2], rend)
+                        if is_segment_valid(query, ref, *merged_segment):
+                            final_filled[-1] = merged_segment
+                            continue
+            final_filled.append(segment)
+        return validate_no_overlaps(final_filled)
+    else:
+        final_filled = []
+        for i, segment in enumerate(filled):
+            qstart, qend, rstart, rend = segment
             
-            if curr_len > prev_len:
-                result[-1] = curr  # Replace with current segment
-        else:
-            # No overlap - add to result
-            result.append(curr)
-    
-    return result
+            if final_filled:
+                prev_qend = final_filled[-1][1]
+                gap_size = qstart - prev_qend
+                if 0 < gap_size <= config.T1_LARGE_GAP_MAX: 
+                    prev_segment = final_filled[-1]
+                   
+                    matches = sum(1 for j in range(gap_size) 
+                                if prev_qend + j < len(query) and 
+                                   prev_segment[3] + j < len(ref) and
+                                   query[prev_qend + j] == ref[prev_segment[3] + j])
+                    
+                    if matches / gap_size >= config.T1_LARGE_GAP_MATCH_RATE: 
+                        merged_segment = (prev_segment[0], qend, prev_segment[2], rend)
+                       
+                        if qend - prev_segment[0] >= config.MIN_SEGMENT_LENGTH:
+                            try:
+                                edit_dist = calculate_distance(ref, query, prev_segment[2], rend, prev_segment[0], qend)
+                                if edit_dist / (qend - prev_segment[0]) <= config.T1_MERGED_SEGMENT_EDIT_RATE: 
+                                    final_filled[-1] = merged_segment
+                                    continue
+                            except:
+                                pass
+            final_filled.append(segment)
+        return validate_no_overlaps(final_filled)
 
-def evaluate_segment(query, ref, q_start, q_end, r_start, r_end):
-    """Calculate the edit distance-based score for a segment"""
-    q_segment = query[q_start:q_end+1]
-    r_segment = ref[r_start:r_end+1]
+def find_alignment_tuples(query, ref):
+    if len(query) < config.SHORT_SEQUENCE_THRESHOLD:
+        kmer_sizes = config.T2_KMER_SIZES
+        params = {
+            'extension_limit': config.T2_EXTENSION_LIMIT_SHORT,
+            'extension_limit_rc': config.T2_EXTENSION_LIMIT_RC,
+            'mismatch_threshold': config.T2_MISMATCH_THRESHOLD_EARLY,
+            'mismatch_rate': config.T2_MISMATCH_RATE,
+            'gap_fill_start_max': config.T2_GAP_FILL_START_MAX,
+            'gap_fill_between_max': config.T2_GAP_FILL_BETWEEN_MAX,
+            'gap_fill_end_max': config.T2_GAP_FILL_END_MAX
+        }
+    else:
+        kmer_sizes = config.T1_KMER_SIZES
+        params = {
+            'extension_limit': config.T1_EXTENSION_LIMIT_LONG,
+            'extension_limit_rc': config.T1_EXTENSION_LIMIT_RC,
+            'mismatch_threshold': config.T1_MISMATCH_THRESHOLD_EARLY,
+            'mismatch_rate': config.T1_MISMATCH_RATE,
+            'gap_fill_start_max': config.T1_GAP_FILL_START_MAX,
+            'gap_fill_between_max': config.T1_GAP_FILL_BETWEEN_MAX,
+            'gap_fill_end_max': config.T1_GAP_FILL_END_MAX
+        }
     
-    # Calculate similarity
-    min_len = min(len(q_segment), len(r_segment))
-    max_len = max(len(q_segment), len(r_segment))
-    
-    # Calculate matches
-    matches = 0
-    for i in range(min_len):
-        if q_segment[i] == r_segment[i]:
-            matches += 1
-    
-    # Score = matches - (length difference penalty)
-    score = matches - 0.5 * (max_len - min_len)
-    return score
+    return find_alignment_unified(query, ref, kmer_sizes, params)
 
-def is_valid_segment(q_start, q_end, r_start, r_end, min_size=MIN_MATCH_LENGTH):
-    """Check if a segment is valid (minimum size and proper coordinates)"""
-    return (q_end >= q_start and r_end >= r_start and
-            q_end - q_start + 1 >= min_size and
-            r_end - r_start + 1 >= min_size)
+def is_segment_valid(query, ref, qstart, qend, rstart, rend):
+    if qend - qstart < config.MIN_SEGMENT_LENGTH:
+        return False
+    try:
+        edit_dist = calculate_distance(ref, query, rstart, rend, qstart, qend)
+        edit_rate = edit_dist / (qend - qstart)
+        return edit_rate <= config.MAX_EDIT_RATE
+    except:
+        return False
 
-def build_segment_graph(segments):
-    """Build a directed acyclic graph from segments"""
-    # Sort segments by query start position
+def validate_no_overlaps(segments):
+    if not segments:
+        return []
+    
     segments.sort(key=lambda x: x[0])
+    validated = []
+    last_end = 0
     
-    # Create graph representation
-    graph = {i: [] for i in range(len(segments))}
+    for segment in segments:
+        qstart, qend, rstart, rend = segment
+        if qstart >= last_end and qend - qstart >= config.MIN_SEGMENT_LENGTH:
+            validated.append((qstart, qend, rstart, rend))
+            last_end = qend
     
-    # Add source and sink nodes
-    graph[-1] = []  # Source
-    graph[len(segments)] = []  # Sink
-    
-    # Connect source to all nodes
-    for i in range(len(segments)):
-        q_start, q_end, r_start, r_end, score, _ = segments[i]
-        graph[-1].append((i, score))
-    
-    # Connect all nodes to sink
-    for i in range(len(segments)):
-        graph[i].append((len(segments), 0))
-    
-    # Connect compatible segments
-    for i in range(len(segments)):
-        q_end_i = segments[i][1]
-        
-        for j in range(i + 1, len(segments)):
-            q_start_j = segments[j][0]
-            
-            # If segments don't overlap in query
-            if q_start_j > q_end_i:
-                # Add edge with weight = score of destination segment
-                graph[i].append((j, segments[j][4]))
-    
-    return graph
-
-def find_maximum_weight_path(graph, segments):
-    """Find the path with maximum total weight in the segment graph"""
-    if not segments:
-        return []
-    
-    n = len(segments)
-    
-    # Initialize distances and predecessors
-    dist = {i: float('-inf') for i in range(-1, n+1)}
-    dist[-1] = 0
-    pred = {i: None for i in range(-1, n+1)}
-    
-    # Topological sort (nodes are already sorted by query position)
-    topo_order = [-1] + list(range(n)) + [n]
-    
-    # Compute longest path
-    for u in topo_order:
-        if u in graph:
-            for v, weight in graph[u]:
-                if dist[u] + weight > dist[v]:
-                    dist[v] = dist[u] + weight
-                    pred[v] = u
-    
-    # Reconstruct path
-    path = []
-    curr = n
-    while curr != -1 and pred[curr] is not None:
-        if pred[curr] != -1:  # Skip source node
-            path.append(pred[curr])
-        curr = pred[curr]
-    
-    return path[::-1]  # Reverse to get the correct order
-
-def merge_adjacent_segments(segments, max_gap=ADJACENT_MERGE_MAX_GAP):
-    """Merge adjacent or nearly adjacent segments"""
-    if not segments:
-        return []
-    
-    # Sort by query start position
-    segments.sort(key=lambda x: x[0])
-    
-    merged = []
-    current = segments[0]
-    
-    for next_seg in segments[1:]:
-        q_curr_start, q_curr_end, r_curr_start, r_curr_end = current
-        q_next_start, q_next_end, r_next_start, r_next_end = next_seg
-        
-        # Calculate gaps
-        q_gap = q_next_start - q_curr_end - 1
-        r_gap = r_next_start - r_curr_end - 1
-        
-        # Check if segments are adjacent or nearly adjacent and have consistent gaps
-        if (q_gap <= max_gap and r_gap <= max_gap and 
-            abs(q_gap - r_gap) <= max(5, min(q_gap, r_gap) * MAX_GAP_RATIO_DIFFERENCE)):
-            # Merge segments
-            current = (q_curr_start, q_next_end, r_curr_start, r_next_end)
-        else:
-            merged.append(current)
-            current = next_seg
-    
-    merged.append(current)
-    return merged
-
-def find_alignment(query, ref, min_match_length=MIN_MATCH_LENGTH):
-    """Find optimal alignment between query and reference handling complex structural variations"""
-    # Strategy: Try different k-mer sizes to balance sensitivity and specificity
-    seq_length = min(len(query), len(ref))
-    gc_content = (query.count('G') + query.count('C')) / len(query)
-    print('gc_content: ', gc_content)
-    
-    # More granular adaptive parameters based on sequence GC content
-    if seq_length < VERY_SHORT_SEQ_THRESHOLD:
-        # Very short sequences (like dataset 2) need special handling
-        k_values = VERY_SHORT_SEQ_K_VALUES
-        min_match_length = VERY_SHORT_SEQ_MIN_MATCH_LENGTH
-        stride = VERY_SHORT_SEQ_STRIDE
-        max_errors = HIGH_GC_MAX_ERRORS
-    elif seq_length < SHORT_SEQ_THRESHOLD:
-        # Short sequences need balanced parameters
-        if gc_content < LOW_GC_THRESHOLD:
-            k_values = LOW_GC_K_VALUES
-            max_errors = LOW_GC_MAX_ERRORS
-        elif gc_content < HIGH_GC_THRESHOLD:
-            k_values = MED_GC_K_VALUES
-            max_errors = LOW_GC_MAX_ERRORS + 1  # Balanced
-        else:
-            k_values = HIGH_GC_K_VALUES
-            max_errors = HIGH_GC_MAX_ERRORS
-    else:
-        # Long sequences (like dataset 1)
-        if gc_content < LOW_GC_THRESHOLD:
-            k_values = LOW_GC_K_VALUES
-            max_errors = LOW_GC_MAX_ERRORS
-        elif gc_content < HIGH_GC_THRESHOLD:
-            k_values = MED_GC_K_VALUES
-            max_errors = LOW_GC_MAX_ERRORS + 1  # Balanced
-        else:
-            k_values = HIGH_GC_K_VALUES
-            max_errors = HIGH_GC_MAX_ERRORS
-    
-    # Collect anchors from different k-mer sizes
-    forward_anchors = []
-    reverse_anchors = []
-    
-    for k in k_values:
-        print(f"Finding anchors with k={k}...")
-        
-        # Adaptive stride based on k-mer size and sequence properties
-        # For very short sequences, use minimal stride
-        if seq_length < VERY_SHORT_SEQ_THRESHOLD:
-            stride = VERY_SHORT_SEQ_STRIDE
-        else:
-            stride = max(1, k - 5)
-        
-        # Find forward and reverse anchors
-        f_anchors = find_anchors(query, ref, k, min_match_length, stride, max_errors)
-        r_anchors = find_reverse_anchors(query, ref, k, min_match_length, stride, max_errors)
-        
-        print(f"  Found {len(f_anchors)} forward anchors, {len(r_anchors)} reverse anchors")
-        
-        forward_anchors.extend(f_anchors)
-        reverse_anchors.extend(r_anchors)
-    
-    # Use adaptive overlap threshold based on GC content
-    overlap_threshold = HIGH_QUALITY_OVERLAP_THRESHOLD
-    if gc_content < LOW_GC_THRESHOLD:
-        # For lower GC content (like dataset 1), be more selective with overlaps
-        overlap_threshold = HIGH_QUALITY_OVERLAP_THRESHOLD + 0.02
-    
-    # Filter combined anchor sets to remove duplicates with improved strategy
-    forward_anchors = filter_anchors(forward_anchors, overlap_threshold)
-    reverse_anchors = filter_anchors(reverse_anchors, overlap_threshold)
-    
-    print(f"After filtering: {len(forward_anchors)} forward, {len(reverse_anchors)} reverse anchors")
-    
-    # Process forward alignments
-    if forward_anchors:
-        forward_graph = build_segment_graph(forward_anchors)
-        forward_path = find_maximum_weight_path(forward_graph, forward_anchors)
-        forward_segments = [(forward_anchors[i][0], forward_anchors[i][1], 
-                           forward_anchors[i][2], forward_anchors[i][3]) 
-                           for i in forward_path if i < len(forward_anchors)]
-    else:
-        forward_segments = []
-    
-    # Process reverse alignments
-    if reverse_anchors:
-        reverse_graph = build_segment_graph(reverse_anchors)
-        reverse_path = find_maximum_weight_path(reverse_graph, reverse_anchors)
-        reverse_segments = [(reverse_anchors[i][0], reverse_anchors[i][1], 
-                           reverse_anchors[i][2], reverse_anchors[i][3]) 
-                           for i in reverse_path if i < len(reverse_anchors)]
-    else:
-        reverse_segments = []
-    
-    # Combine forward and reverse segments
-    combined_segments = []
-    if forward_segments:
-        combined_segments.extend(forward_segments)
-    if reverse_segments:
-        combined_segments.extend(reverse_segments)
-    
-    # Sort by query position and resolve overlaps
-    initial_segments = []
-    if combined_segments:
-        # Sort by query start position
-        combined_segments.sort(key=lambda x: x[0])
-        
-        # Handle overlaps
-        current = combined_segments[0]
-        for next_seg in combined_segments[1:]:
-            q_curr_start, q_curr_end, r_curr_start, r_curr_end = current
-            q_next_start, q_next_end, r_next_start, r_next_end = next_seg
-            
-            # Check for overlap in query
-            if q_next_start <= q_curr_end:
-                # Choose the longer segment
-                curr_len = q_curr_end - q_curr_start
-                next_len = q_next_end - q_next_start
-                
-                if next_len > curr_len:
-                    current = next_seg
-                # Otherwise keep current
-            else:
-                initial_segments.append(current)
-                current = next_seg
-        
-        initial_segments.append(current)
-    
-    # Merge adjacent segments
-    merged_segments = merge_adjacent_segments(initial_segments, max_gap=ADJACENT_MERGE_MAX_GAP)
-    
-    # Ensure complete coverage of the query with fine-grained matching for large gaps
-    complete_segments = ensure_complete_coverage(query, ref, merged_segments)
-    
-    # Final merging pass to clean up
-    final_segments = merge_adjacent_segments(complete_segments, max_gap=FINAL_MERGE_MAX_GAP)
-    
-    # Convert to output format: (q_start, q_end-1, r_start, r_end-1)
-    # The -1 adjustment is because our internal representation is inclusive at both ends
-    output_segments = []
-    for q_start, q_end, r_start, r_end in final_segments:
-        # Ensure end indices are within bounds
-        q_end = min(q_end, len(query) - 1)
-        r_end = min(r_end, len(ref) - 1)
-        output_segments.append((q_start, q_end, r_start, r_end))
-    
-    # Check final coverage
-    final_uncovered = find_uncovered_regions(query, output_segments)
-    total_uncovered = sum(u[1]-u[0]+1 for u in final_uncovered)
-    coverage_percentage = 100 * (len(query) - total_uncovered) / len(query)
-    print(f"Final coverage: {coverage_percentage:.2f}% of query ({len(output_segments)} segments)")
-    
-    return output_segments
+    return validated
 
 def main():
-    """Main function to run alignment"""
-    # For testing with the provided data files
-    data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+    start_time = time.time()
     
-    # Process both datasets
-    for i in range(1, 3):
-        query_file = os.path.join(data_dir, f"query{i}.txt")
-        ref_file = os.path.join(data_dir, f"ref{i}.txt")
-        output_file = f"result{i}.txt"
-        
-        print(f"\nProcessing dataset {i}...")
-        
-        query = read_sequence(query_file)
-        ref = read_sequence(ref_file)
-        
-        print(f"Query length: {len(query)}")
-        print(f"Reference length: {len(ref)}")
-        
-        start_time = time.time()
-        # Use the default min_match_length from config
-        # The find_alignment function will adapt based on sequence properties
-        alignment = find_alignment(query, ref)
-        end_time = time.time()
-        
-        print(f"Time taken: {end_time - start_time:.2f} seconds")
-        print(f"Found {len(alignment)} matching regions")
-        
-        with open(output_file, 'w') as f:
-            f.write(str(alignment))
-        print(f"Results written to {output_file}")
-
+    q1 = q2 = r1 = r2 = ''
+    with open('data/query1.txt', 'r') as f:
+        q1 = f.read()
+    with open('data/query2.txt', 'r') as f:
+        q2 = f.read()
+    with open('data/ref1.txt', 'r') as f:
+        r1 = f.read()
+    with open('data/ref2.txt', 'r') as f:
+        r2 = f.read()
+    q1 = q1.strip()
+    q2 = q2.strip()
+    r1 = r1.strip()
+    r2 = r2.strip()
+    
+    print(f"Data loading completed in {time.time() - start_time:.3f} seconds")
+    
+    t1_start = time.time()
+    t1 = find_alignment_tuples(q1, r1)
+    t1_time = time.time() - t1_start
+   
+    t2_start = time.time()
+    t2 = find_alignment_tuples(q2, r2)
+    t2_time = time.time() - t2_start
+    
+    t1_score = calculate_value(str(t1), r1, q1)
+    t2_score = calculate_value(str(t2), r2, q2)
+    
+    print('t1: ', t1)
+    print('t2: ', t2)
+    print(f't1 score: {t1_score}')
+    print(f't2 score: {t2_score}')
+    print(f'T1 alignment time: {t1_time:.3f} seconds')
+    print(f'T2 alignment time: {t2_time:.3f} seconds')
+    
 if __name__ == "__main__":
     main()
