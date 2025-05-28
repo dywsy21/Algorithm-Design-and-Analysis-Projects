@@ -17,8 +17,8 @@ def find_alignment_tuples(query, ref):
             'gap_fill_end_max': config.T2_GAP_FILL_END_MAX
         }
     else:
-        # Long sequence parameters
-        kmer_sizes = [config.SMALL_KMER_SIZE, config.KMER_SIZE]
+        # Long sequence parameters - add larger k-mer for higher specificity
+        kmer_sizes = [config.SMALL_KMER_SIZE, config.KMER_SIZE, config.LARGE_KMER_SIZE]
         params = {
             'extension_limit': config.T1_EXTENSION_LIMIT_LONG,
             'extension_limit_rc': config.T1_EXTENSION_LIMIT_RC,
@@ -43,11 +43,11 @@ def find_alignment_unified(query, ref, kmer_sizes, params):
         for kmer_size in kmer_sizes:
             if kmer_size <= 5:
                 # Ultra-sparse sampling for very small k-mers to reduce noise
-                anchors = seq2hashtable_multi_test(ref, query, kmer_size, 3)
+                anchors = seq2hashtable_multi_test(ref, query, kmer_size, config.T2_SMALL_KMER_SHIFT)
                 all_anchors.extend(anchors)
             elif kmer_size <= 8:
                 # Dense sampling for small k-mers
-                anchors = seq2hashtable_multi_test(ref, query, kmer_size, 1)
+                anchors = seq2hashtable_multi_test(ref, query, kmer_size, config.T2_MEDIUM_KMER_SHIFT)
                 all_anchors.extend(anchors)
             else:
                 # Normal sampling for larger k-mers
@@ -107,11 +107,11 @@ def extend_anchor_unified(query, ref, qpos, rpos, strand, initial_len, params):
         
         # For short sequences, try more aggressive boundary extension
         if qlen < config.SHORT_SEQUENCE_THRESHOLD:
-            if qpos - left_ext <= 10 and rpos - left_ext >= 0:
+            if qpos - left_ext <= config.T1_BOUNDARY_TOLERANCE and rpos - left_ext >= 0:
                 boundary_left = min(qpos, rpos)
                 left_ext = max(left_ext, boundary_left)
             
-            if qpos + initial_len + right_ext >= qlen - 10 and rpos + initial_len + right_ext + (qlen - qpos - initial_len - right_ext) <= rlen:
+            if qpos + initial_len + right_ext >= qlen - config.T1_BOUNDARY_TOLERANCE and rpos + initial_len + right_ext + (qlen - qpos - initial_len - right_ext) <= rlen:
                 boundary_right = qlen - qpos - initial_len
                 right_ext = max(right_ext, boundary_right)
         
@@ -132,7 +132,7 @@ def extend_anchor_unified(query, ref, qpos, rpos, strand, initial_len, params):
                 else:
                     left_mismatches += 1
                     # Allow some mismatches for RC
-                    if left_ext > 10 and left_mismatches / left_ext > 0.15:
+                    if left_ext > config.T1_RC_MIN_LENGTH and left_mismatches / left_ext > config.T1_RC_MISMATCH_RATE:
                         break
                     left_ext += 1
             
@@ -146,7 +146,7 @@ def extend_anchor_unified(query, ref, qpos, rpos, strand, initial_len, params):
                 else:
                     right_mismatches += 1
                     # Allow some mismatches for RC
-                    if right_ext > 10 and right_mismatches / right_ext > 0.15:
+                    if right_ext > config.T1_RC_MIN_LENGTH and right_mismatches / right_ext > config.T1_RC_MISMATCH_RATE:
                         break
                     right_ext += 1
         else:
@@ -189,7 +189,7 @@ def select_segments_unified(segments, query, ref, params):
     return gap_fill_unified(selected, query, ref, params)
 
 def gap_fill_unified(segments, query, ref, params):
-    """Unified gap filling with parameter-based behavior"""
+    """Unified gap filling with improved strategy for long sequences"""
     if not segments:
         return []
     
@@ -244,9 +244,9 @@ def gap_fill_unified(segments, query, ref, params):
                 if is_segment_valid(query, ref, *extended_segment):
                     filled[-1] = extended_segment
     
-    # For short sequences, try additional gap filling with smaller thresholds
+    # Additional gap filling strategies based on sequence type
     if len(query) < config.SHORT_SEQUENCE_THRESHOLD:
-        # Second pass: try smaller gap filling
+        # For short sequences, try additional gap filling with smaller thresholds
         final_filled = []
         for i, segment in enumerate(filled):
             qstart, qend, rstart, rend = segment
@@ -256,14 +256,14 @@ def gap_fill_unified(segments, query, ref, params):
                 gap_size = qstart - prev_qend
                 
                 # Try smaller gaps with high similarity
-                if 0 < gap_size <= 20:
+                if 0 < gap_size <= config.T2_SMALL_GAP_MAX:
                     prev_segment = final_filled[-1]
                     mismatches = sum(1 for j in range(gap_size) 
                                    if prev_qend + j < len(query) and 
                                       prev_segment[3] + j < len(ref) and
                                       query[prev_qend + j] != ref[prev_segment[3] + j])
                     
-                    if mismatches / gap_size <= 0.15:  # Allow 15% mismatch
+                    if mismatches / gap_size <= config.T2_SMALL_GAP_MISMATCH_RATE:  # Allow 15% mismatch
                         merged_segment = (prev_segment[0], qend, prev_segment[2], rend)
                         if is_segment_valid(query, ref, *merged_segment):
                             final_filled[-1] = merged_segment
@@ -272,8 +272,40 @@ def gap_fill_unified(segments, query, ref, params):
             final_filled.append(segment)
         
         return validate_no_overlaps(final_filled)
-    
-    return validate_no_overlaps(filled)
+    else:
+        # For long sequences, try more aggressive gap filling
+        final_filled = []
+        for i, segment in enumerate(filled):
+            qstart, qend, rstart, rend = segment
+            
+            if final_filled:
+                prev_qend = final_filled[-1][1]
+                gap_size = qstart - prev_qend
+                
+                # Try larger gaps with moderate similarity for long sequences
+                if 0 < gap_size <= config.T1_LARGE_GAP_MAX:  # Larger gap tolerance for long sequences
+                    prev_segment = final_filled[-1]
+                    # Check if gap region has reasonable similarity
+                    matches = sum(1 for j in range(gap_size) 
+                                if prev_qend + j < len(query) and 
+                                   prev_segment[3] + j < len(ref) and
+                                   query[prev_qend + j] == ref[prev_segment[3] + j])
+                    
+                    if matches / gap_size >= config.T1_LARGE_GAP_MATCH_RATE:  # Require 80% match for larger gaps
+                        merged_segment = (prev_segment[0], qend, prev_segment[2], rend)
+                        # Use more lenient validation for merged segments
+                        if qend - prev_segment[0] >= config.MIN_SEGMENT_LENGTH:
+                            try:
+                                edit_dist = calculate_distance(ref, query, prev_segment[2], rend, prev_segment[0], qend)
+                                if edit_dist / (qend - prev_segment[0]) <= config.T1_MERGED_SEGMENT_EDIT_RATE:  # Slightly more lenient
+                                    final_filled[-1] = merged_segment
+                                    continue
+                            except:
+                                pass
+            
+            final_filled.append(segment)
+        
+        return validate_no_overlaps(final_filled)
 
 def is_segment_valid(query, ref, qstart, qend, rstart, rend):
     """Validate segment using edit distance"""
@@ -324,9 +356,9 @@ def main():
     print(f"Data loading completed in {time.time() - start_time:.3f} seconds")
     
     # Time T1 alignment
-    # t1_start = time.time()
-    # t1 = find_alignment_tuples(q1, r1)
-    # t1_time = time.time() - t1_start
+    t1_start = time.time()
+    t1 = find_alignment_tuples(q1, r1)
+    t1_time = time.time() - t1_start
     
     # Time T2 alignment
     t2_start = time.time()
@@ -335,18 +367,18 @@ def main():
     
     # Calculate scores
     score_start = time.time()
-    # t1_score = calculate_value(str(t1), r1, q1)
+    t1_score = calculate_value(str(t1), r1, q1)
     t2_score = calculate_value(str(t2), r2, q2)
     score_time = time.time() - score_start
     
     total_time = time.time() - start_time
     
     # Output results with timing information
-    # print('t1: ', t1)
+    print('t1: ', t1)
     print('t2: ', t2)
-    # print(f't1 score: {t1_score}')
+    print(f't1 score: {t1_score}')
     print(f't2 score: {t2_score}')
-    # print(f'T1 alignment time: {t1_time:.3f} seconds')
+    print(f'T1 alignment time: {t1_time:.3f} seconds')
     print(f'T2 alignment time: {t2_time:.3f} seconds')
     
 if __name__ == "__main__":
