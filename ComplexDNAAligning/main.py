@@ -5,8 +5,8 @@ import time
 def find_alignment_tuples(query, ref):
     """Main entry point - determine strategy based on sequence length"""
     if len(query) < config.SHORT_SEQUENCE_THRESHOLD:
-        # Short sequence parameters
-        kmer_sizes = config.T2_KMER_SIZES
+        # Short sequence parameters - add smaller k-mers for better sensitivity
+        kmer_sizes = [4, 5] + config.T2_KMER_SIZES  # Add very small k-mers
         params = {
             'extension_limit': config.T2_EXTENSION_LIMIT_SHORT,
             'extension_limit_rc': config.T2_EXTENSION_LIMIT_RC,
@@ -35,11 +35,29 @@ def find_alignment_unified(query, ref, kmer_sizes, params):
     """Unified alignment function for both long and short sequences"""
     # Generate anchors using specified k-mer sizes
     all_anchors = []
-    shift = 1 if len(query) < config.SHORT_SEQUENCE_THRESHOLD else config.DENSE_SHIFT
     
-    for kmer_size in kmer_sizes:
-        anchors = seq2hashtable_multi_test(ref, query, kmer_size, shift)
-        all_anchors.extend(anchors)
+    # Use denser sampling for short sequences to capture more matches
+    if len(query) < config.SHORT_SEQUENCE_THRESHOLD:
+        shift = 1  # Very dense for short sequences
+        # Different sampling strategies for different k-mer sizes
+        for kmer_size in kmer_sizes:
+            if kmer_size <= 5:
+                # Ultra-sparse sampling for very small k-mers to reduce noise
+                anchors = seq2hashtable_multi_test(ref, query, kmer_size, 3)
+                all_anchors.extend(anchors)
+            elif kmer_size <= 8:
+                # Dense sampling for small k-mers
+                anchors = seq2hashtable_multi_test(ref, query, kmer_size, 1)
+                all_anchors.extend(anchors)
+            else:
+                # Normal sampling for larger k-mers
+                anchors = seq2hashtable_multi_test(ref, query, kmer_size, shift)
+                all_anchors.extend(anchors)
+    else:
+        shift = config.DENSE_SHIFT
+        for kmer_size in kmer_sizes:
+            anchors = seq2hashtable_multi_test(ref, query, kmer_size, shift)
+            all_anchors.extend(anchors)
     
     if not all_anchors:
         return []
@@ -56,7 +74,7 @@ def find_alignment_unified(query, ref, kmer_sizes, params):
     return select_segments_unified(segments, query, ref, params)
 
 def extend_anchor_unified(query, ref, qpos, rpos, strand, initial_len, params):
-    """Unified anchor extension with parameter-based behavior"""
+    """Unified anchor extension with improved reverse complement handling"""
     qlen, rlen = len(query), len(ref)
     rc_map = {'A': 'T', 'T': 'A', 'G': 'C', 'C': 'G'}
     
@@ -87,21 +105,63 @@ def extend_anchor_unified(query, ref, qpos, rpos, strand, initial_len, params):
                     break
                 right_ext += 1
         
+        # For short sequences, try more aggressive boundary extension
+        if qlen < config.SHORT_SEQUENCE_THRESHOLD:
+            if qpos - left_ext <= 10 and rpos - left_ext >= 0:
+                boundary_left = min(qpos, rpos)
+                left_ext = max(left_ext, boundary_left)
+            
+            if qpos + initial_len + right_ext >= qlen - 10 and rpos + initial_len + right_ext + (qlen - qpos - initial_len - right_ext) <= rlen:
+                boundary_right = qlen - qpos - initial_len
+                right_ext = max(right_ext, boundary_right)
+        
         return (qpos - left_ext, qpos + initial_len + right_ext, 
                 rpos - left_ext, rpos + initial_len + right_ext)
     
-    else:  # Reverse complement - exact matching only
-        left_ext = 0
-        while (qpos - left_ext > 0 and rpos + initial_len + left_ext < rlen and
-               left_ext < params['extension_limit_rc'] and
-               query[qpos - left_ext - 1] == rc_map.get(ref[rpos + initial_len + left_ext], 'N')):
-            left_ext += 1
-        
-        right_ext = 0
-        while (qpos + initial_len + right_ext < qlen and rpos - right_ext > 0 and
-               right_ext < params['extension_limit_rc'] and
-               query[qpos + initial_len + right_ext] == rc_map.get(ref[rpos - right_ext - 1], 'N')):
-            right_ext += 1
+    else:  # Reverse complement - improved handling
+        # More aggressive extension for reverse complement in short sequences
+        if qlen < config.SHORT_SEQUENCE_THRESHOLD:
+            # Allow some mismatches for reverse complement extension
+            left_ext = 0
+            left_mismatches = 0
+            while (qpos - left_ext > 0 and rpos + initial_len + left_ext < rlen and
+                   left_ext < params['extension_limit_rc']):
+                expected_char = rc_map.get(ref[rpos + initial_len + left_ext], 'N')
+                if query[qpos - left_ext - 1] == expected_char:
+                    left_ext += 1
+                else:
+                    left_mismatches += 1
+                    # Allow some mismatches for RC
+                    if left_ext > 10 and left_mismatches / left_ext > 0.15:
+                        break
+                    left_ext += 1
+            
+            right_ext = 0
+            right_mismatches = 0
+            while (qpos + initial_len + right_ext < qlen and rpos - right_ext > 0 and
+                   right_ext < params['extension_limit_rc']):
+                expected_char = rc_map.get(ref[rpos - right_ext - 1], 'N')
+                if query[qpos + initial_len + right_ext] == expected_char:
+                    right_ext += 1
+                else:
+                    right_mismatches += 1
+                    # Allow some mismatches for RC
+                    if right_ext > 10 and right_mismatches / right_ext > 0.15:
+                        break
+                    right_ext += 1
+        else:
+            # Exact matching for long sequences (original logic)
+            left_ext = 0
+            while (qpos - left_ext > 0 and rpos + initial_len + left_ext < rlen and
+                   left_ext < params['extension_limit_rc'] and
+                   query[qpos - left_ext - 1] == rc_map.get(ref[rpos + initial_len + left_ext], 'N')):
+                left_ext += 1
+            
+            right_ext = 0
+            while (qpos + initial_len + right_ext < qlen and rpos - right_ext > 0 and
+                   right_ext < params['extension_limit_rc'] and
+                   query[qpos + initial_len + right_ext] == rc_map.get(ref[rpos - right_ext - 1], 'N')):
+                right_ext += 1
         
         return (qpos - left_ext, qpos + initial_len + right_ext,
                 rpos - right_ext, rpos + initial_len + left_ext)
@@ -183,6 +243,35 @@ def gap_fill_unified(segments, query, ref, params):
                 extended_segment = (last_segment[0], qlen, last_segment[2], last_segment[3] + gap_size)
                 if is_segment_valid(query, ref, *extended_segment):
                     filled[-1] = extended_segment
+    
+    # For short sequences, try additional gap filling with smaller thresholds
+    if len(query) < config.SHORT_SEQUENCE_THRESHOLD:
+        # Second pass: try smaller gap filling
+        final_filled = []
+        for i, segment in enumerate(filled):
+            qstart, qend, rstart, rend = segment
+            
+            if final_filled:
+                prev_qend = final_filled[-1][1]
+                gap_size = qstart - prev_qend
+                
+                # Try smaller gaps with high similarity
+                if 0 < gap_size <= 20:
+                    prev_segment = final_filled[-1]
+                    mismatches = sum(1 for j in range(gap_size) 
+                                   if prev_qend + j < len(query) and 
+                                      prev_segment[3] + j < len(ref) and
+                                      query[prev_qend + j] != ref[prev_segment[3] + j])
+                    
+                    if mismatches / gap_size <= 0.15:  # Allow 15% mismatch
+                        merged_segment = (prev_segment[0], qend, prev_segment[2], rend)
+                        if is_segment_valid(query, ref, *merged_segment):
+                            final_filled[-1] = merged_segment
+                            continue
+            
+            final_filled.append(segment)
+        
+        return validate_no_overlaps(final_filled)
     
     return validate_no_overlaps(filled)
 
