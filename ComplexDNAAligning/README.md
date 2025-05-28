@@ -1,4 +1,16 @@
-# 复杂DNA序列比对算法
+---
+title: "复杂DNA序列比对算法 实验报告"
+author: "王思宇"
+date: \today
+using_title: true
+using_table_of_content: true
+---
+
+# 复杂DNA序列比对算法 实验报告
+
+## 项目地址
+
+本项目托管在GitHub上：[dywsy21/Algorithm-Design-and-Analysis-Projects](https://github.com/dywsy21/Algorithm-Design-and-Analysis-Projects)
 
 ## 项目概述
 
@@ -6,7 +18,7 @@
 
 ## 算法整体思路
 
-本算法本质上是一个图匹配算法，将DNA序列比对问题转化为在序列图中寻找最优路径的问题：
+使用的算法本质上是图匹配算法，将DNA序列比对问题转化为在序列图中寻找最优路径的问题：
 
 1. 将参考序列和查询序列的k-mer作为图中的节点
 2. 相同的k-mer之间建立连接边，形成潜在的比对锚点
@@ -31,6 +43,36 @@
 - 长序列：k=[8,15]，适中采样（shift=1）
 - 短序列：k=[6,8,10,12,15]，密集采样（shift=1）
 
+#### 锚点检测伪代码
+
+伪代码如下：
+
+```
+GENERATE-ANCHORS(ref, query, kmer_sizes)
+  anchors ← ∅
+  for each k ∈ kmer_sizes
+      do anchor_set ← HASHTABLE-KMER-SEARCH(ref, query, k, 1)
+         anchors ← anchors ∪ anchor_set
+  return anchors
+```
+
+```
+HASHTABLE-KMER-SEARCH(ref, query, k, shift)
+  hash_table ← BUILD-KMER-HASHTABLE(ref, k)
+  rc_query ← REVERSE-COMPLEMENT(query)
+  anchors ← ∅
+  for i ← 0 to length[query] - k by shift
+      do kmer ← query[i..i+k-1]
+         if HASH(kmer) ∈ hash_table
+             then for each pos ∈ hash_table[HASH(kmer)]
+                      do anchors ← anchors ∪ {(i, pos, +1, k)}
+         rc_kmer ← rc_query[length[query]-i-k..length[query]-i-1]
+         if HASH(rc_kmer) ∈ hash_table
+             then for each pos ∈ hash_table[HASH(rc_kmer)]
+                      do anchors ← anchors ∪ {(i, pos, -1, k)}
+  return anchors
+```
+
 ### 3. 保守延展策略
 
 对每个锚点进行双向延展，严格控制错误匹配率：
@@ -38,16 +80,37 @@
 - 实时监控错误匹配率，超过阈值立即停止延展
 - 正向链和反向互补链分别处理
 
+#### 锚点延展伪代码
+
+伪代码如下：
+
+```
+EXTEND-ANCHOR(query, ref, qpos, rpos, strand, init_len, params)
+  if strand = +1
+      then return EXTEND-FORWARD-STRAND(query, ref, qpos, rpos, init_len, params)
+      else return EXTEND-REVERSE-STRAND(query, ref, qpos, rpos, init_len, params)
+```
+
+```
+EXTEND-FORWARD-STRAND(query, ref, qpos, rpos, init_len, params)
+   left_ext ← 0
+   mismatches ← 0
+   while qpos - left_ext > 0 and rpos - left_ext > 0 and left_ext < params.extension_limit
+       do if query[qpos - left_ext - 1] = ref[rpos - left_ext - 1]
+              then left_ext ← left_ext + 1
+              else mismatches ← mismatches + 1
+                   if left_ext > params.mismatch_threshold and 
+                      mismatches / left_ext > params.mismatch_rate
+                       then break
+                   left_ext ← left_ext + 1
+   right_ext ← EXTEND-RIGHT-DIRECTION(query, ref, qpos, rpos, init_len, params)
+   return (qpos - left_ext, qpos + init_len + right_ext, 
+           rpos - left_ext, rpos + init_len + right_ext)
+```
+
 ## 详细算法实现
 
 ### 阶段一：锚点生成
-
-```python
-def seq2hashtable_multi_test(refseq, testseq, kmersize, shift):
-    # 构建参考序列k-mer哈希表
-    # 在查询序列和其反向互补序列中搜索匹配的k-mer
-    # 返回(query_pos, ref_pos, strand, match_len)格式的锚点
-```
 
 符号说明:
 - n：参考序列长度
@@ -56,37 +119,44 @@ def seq2hashtable_multi_test(refseq, testseq, kmersize, shift):
 
 **时间复杂度**：O(n + m·k)
 
-
 ### 阶段二：锚点延展
 
-```python
-def extend_anchor(query, ref, qpos, rpos, strand, initial_len, params):
-    # 左向延展
-    while (边界检查 and 延展长度限制):
-        if 字符匹配:
-            延展长度++
-        else:
-            错误匹配数++
-            if 错误率 > 阈值:
-                break
-    
-    # 右向延展（同样逻辑）
-```
-
 参数设置为: 
-- 短序列：延展限制80bp，错误率阈值7%
+- 短序列：延展限制80bp，错误率阈值8%
 - 长序列：延展限制200bp，错误率阈值5%
 
 符号说明: L：平均延展长度
-时间复杂度：O(L)
+**时间复杂度**：O(L)
 
 ### 阶段三：片段选择与优化
-```python
-def select_segments(segments, params):
-    # 1. 验证所有片段的编辑距离
-    # 2. 按查询位置排序
-    # 3. 贪心选择非重叠片段
-    # 4. 应用间隙填充策略
+
+#### 片段选择伪代码
+
+伪代码如下：
+
+```
+SELECT-NON-OVERLAPPING-SEGMENTS(segments)
+   valid_segments ← ∅
+   for each segment ∈ segments
+       do if VALIDATE-SEGMENT(segment)
+              then valid_segments ← valid_segments ∪ {segment}
+   SORT(valid_segments, key = query_start)
+   selected ← ∅
+   last_end ← 0
+   for each segment ∈ valid_segments
+       do if segment.query_start ≥ last_end
+              then selected ← selected ∪ {segment}
+                   last_end ← segment.query_end
+   return selected
+```
+
+```
+VALIDATE-SEGMENT(query, ref, qstart, qend, rstart, rend)
+   if qend - qstart < MIN_SEGMENT_LENGTH
+       then return FALSE
+   edit_distance ← CALCULATE-EDIT-DISTANCE(ref, query, rstart, rend, qstart, qend)
+   edit_rate ← edit_distance / (qend - qstart)
+   return edit_rate ≤ MAX_EDIT_RATE
 ```
 
 验证条件的参数设置为：
@@ -98,11 +168,26 @@ def select_segments(segments, params):
 
 保守的间隙填充策略，仅在精确匹配时合并片段：
 
-```python
-def gap_filling(segments, query, ref, params):
-    # 起始延展：尝试将第一个片段延展至位置0
-    # 片段间填充：填充小间隙（≤40bp for 短序列，≤30bp for 长序列）
-    # 末尾延展：尝试将最后片段延展至序列末尾
+#### 间隙填充伪代码
+
+伪代码如下：
+
+```
+CONSERVATIVE-GAP-FILLING(segments, query, ref, params)
+   filled ← ∅
+   for i ← 1 to length[segments]
+       do segment ← segments[i]
+          if i = 1 and segment.query_start > 0
+              then segment ← TRY-EXTEND-TO-START(segment, query, ref, params)
+          if filled ≠ ∅
+              then gap_size ← segment.query_start - filled[last].query_end
+                   if 0 < gap_size ≤ params.gap_fill_max and EXACT-MATCH-CHECK(...)
+                       then filled[last] ← MERGE-SEGMENTS(filled[last], segment)
+                             continue
+          filled ← filled ∪ {segment}
+   if filled ≠ ∅ and filled[last].query_end < length[query]
+       then filled[last] ← TRY-EXTEND-TO-END(filled[last], query, ref, params)
+   return VALIDATE-NO-OVERLAPS(filled)
 ```
 
 ## 复杂度分析
@@ -136,17 +221,18 @@ def gap_filling(segments, query, ref, params):
 4. 间隙填充：O(S·G)
    - G为平均间隙大小，通常很小
 
-总时间复杂度：O(n + m·k + A·L + S·V)
+**总时间复杂度**：O(n + m·k + A·L + S·V)
 
 在实际应用中，由于A << m，S << A，算法表现接近线性时间。
 
 ## 性能表现
 
 在标准测试数据集上的表现：
-- **长序列（T1）**：得分29710/29820（99.6%）
-- **短序列（T2）**：得分1951/2090（93.3%）
 
-算法在保证高精度的同时，实现了优秀的覆盖率和运行效率。
+- **长序列（T1）**：得分29710/29820（99.6%）
+- **短序列（T2）**：得分1983/2090 (94.9%)
+
+两序列均仅差100分达到基线，实现了优秀的覆盖率和运行效率。
 
 ## 参数配置
 
