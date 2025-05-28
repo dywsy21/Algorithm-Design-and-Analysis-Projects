@@ -324,9 +324,9 @@ def main():
     print(f"Data loading completed in {time.time() - start_time:.3f} seconds")
     
     # Time T1 alignment
-    t1_start = time.time()
-    t1 = find_alignment_tuples(q1, r1)
-    t1_time = time.time() - t1_start
+    # t1_start = time.time()
+    # t1 = find_alignment_tuples(q1, r1)
+    # t1_time = time.time() - t1_start
     
     # Time T2 alignment
     t2_start = time.time()
@@ -335,18 +335,18 @@ def main():
     
     # Calculate scores
     score_start = time.time()
-    t1_score = calculate_value(str(t1), r1, q1)
+    # t1_score = calculate_value(str(t1), r1, q1)
     t2_score = calculate_value(str(t2), r2, q2)
     score_time = time.time() - score_start
     
     total_time = time.time() - start_time
     
     # Output results with timing information
-    print('t1: ', t1)
+    # print('t1: ', t1)
     print('t2: ', t2)
-    print(f't1 score: {t1_score}')
+    # print(f't1 score: {t1_score}')
     print(f't2 score: {t2_score}')
-    print(f'T1 alignment time: {t1_time:.3f} seconds')
+    # print(f'T1 alignment time: {t1_time:.3f} seconds')
     print(f'T2 alignment time: {t2_time:.3f} seconds')
     
 if __name__ == "__main__":
